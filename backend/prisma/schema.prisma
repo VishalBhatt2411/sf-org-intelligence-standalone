@@ -40,8 +40,11 @@ model SalesforceConnection {
   loginUrl          String       @default("https://login.salesforce.com") @map("login_url")
   scheduleFrequency String       @default("off") @map("schedule_frequency")
   nextScanAt        DateTime?    @map("next_scan_at")
+  graphSettings     Json?        @map("graph_settings")
   createdAt         DateTime     @default(now()) @map("created_at")
   scans             Scan[]
+  graphNodes        GraphNode[]
+  graphEdges        GraphEdge[]
 
   @@map("salesforce_connections")
 }
@@ -82,6 +85,9 @@ model ScanResult {
   scan      Scan     @relation(fields: [scanId], references: [id], onDelete: Cascade)
   category  String
   itemCount Int      @map("item_count")
+  // Graph scan stages record how complete the stage was: complete | partial | degraded.
+  coverage       String?
+  coverageDetail String? @map("coverage_detail")
   createdAt DateTime @default(now()) @map("created_at")
 
   @@map("scan_results")
@@ -323,4 +329,53 @@ model AiRecommendation {
   createdAt  DateTime @default(now()) @map("created_at")
 
   @@map("ai_recommendations")
+}
+
+// ---------------------------------------------------------------------------
+// Org Intelligence graph. One live graph per connection (not per scan): rows are
+// upserted by checksum on every scan and marked "stale" when a full snapshot of
+// their type no longer contains them. first/lastSeenScanId are plain references
+// (no FK) so deleting an old scan never deletes graph history.
+// ---------------------------------------------------------------------------
+model GraphNode {
+  id              String               @id @default(uuid())
+  connectionId    String               @map("connection_id")
+  connection      SalesforceConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  nodeKey         String               @map("node_key")
+  typeKey         String               @map("type_key")
+  label           String
+  fqn             String
+  namespace       String?
+  parentKey       String?              @map("parent_key")
+  attributes      Json
+  checksum        String
+  state           String               @default("active")
+  firstSeenScanId String               @map("first_seen_scan_id")
+  lastSeenScanId  String               @map("last_seen_scan_id")
+
+  @@unique([connectionId, nodeKey])
+  @@index([connectionId, typeKey])
+  @@index([connectionId, parentKey])
+  @@map("graph_nodes")
+}
+
+model GraphEdge {
+  id              String               @id @default(uuid())
+  connectionId    String               @map("connection_id")
+  connection      SalesforceConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  edgeKey         String               @map("edge_key")
+  typeKey         String               @map("type_key")
+  sourceNodeKey   String               @map("source_node_key")
+  targetNodeKey   String               @map("target_node_key")
+  confidence      String
+  attributes      Json
+  checksum        String
+  state           String               @default("active")
+  firstSeenScanId String               @map("first_seen_scan_id")
+  lastSeenScanId  String               @map("last_seen_scan_id")
+
+  @@unique([connectionId, edgeKey])
+  @@index([connectionId, sourceNodeKey])
+  @@index([connectionId, targetNodeKey])
+  @@map("graph_edges")
 }
