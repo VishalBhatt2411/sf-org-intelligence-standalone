@@ -33,7 +33,7 @@ connectionsRouter.get("/:id/org-info", async (req, res) => {
 
 connectionsRouter.get("/:id/health-history", async (req, res) => {
   const scans = await prisma.scan.findMany({
-    where: { connectionId: req.params.id, status: "completed" },
+    where: { connectionId: req.params.id, status: { in: ["completed", "completed_with_errors"] } },
     orderBy: { startedAt: "asc" },
     select: { id: true, startedAt: true },
   });

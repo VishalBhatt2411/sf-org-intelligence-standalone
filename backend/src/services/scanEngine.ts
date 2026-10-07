@@ -1,6 +1,14 @@
 import type { Connection } from "jsforce";
 import { prisma } from "../prisma";
 import { getConnection } from "./salesforce";
+import { PrismaScanInputs } from "../graph/graphInputs";
+import { PrismaGraphRepository } from "../graph/graphRepository";
+import { JsforceGraphSource } from "../graph/graphSource";
+import { runGraphStage, type SectionCoverage } from "../graph/graphStage";
+import { resolveGraphSettings } from "../graph/settings";
+
+// A section returns its item count, or a count with a coverage note when it knows it saw less than all.
+type SectionOutcome = number | { count: number; coverage: SectionCoverage["coverage"]; detail?: string | null };
 
 // Auto-generated companion tables (field history tracking, Chatter feed, sharing, change
 // events) aren't independently configurable — they just mirror their parent object, so
@@ -88,10 +96,13 @@ async function loadCustomFieldIds(conn: Connection): Promise<Map<string, string>
 
 async function scanObjectsAndFields(conn: Connection, scanId: string, targetNames: string[]) {
   // Best-effort — standard-only orgs or restricted API access shouldn't block the rest of the scan.
-  const [objectIds, fieldIds] = await Promise.all([
-    loadCustomObjectIds(conn).catch(() => new Map<string, string>()),
-    loadCustomFieldIds(conn).catch(() => new Map<string, string>()),
-  ]);
+  let idLookupFailed = false;
+  const orEmpty = (p: Promise<Map<string, string>>) =>
+    p.catch(() => {
+      idLookupFailed = true;
+      return new Map<string, string>();
+    });
+  const [objectIds, fieldIds] = await Promise.all([orEmpty(loadCustomObjectIds(conn)), orEmpty(loadCustomFieldIds(conn))]);
 
   const outcomes = await mapWithConcurrency(targetNames, API_CONCURRENCY, async (targetName) => {
     try {
@@ -124,7 +135,10 @@ async function scanObjectsAndFields(conn: Connection, scanId: string, targetName
     }
   });
 
-  return outcomes.filter(Boolean).length;
+  const count = outcomes.filter(Boolean).length;
+  const failed = outcomes.length - count;
+  const problems = [failed > 0 ? `describe failed for ${failed} object(s)` : null, idLookupFailed ? "custom object/field Id lookup failed" : null].filter(Boolean);
+  return problems.length > 0 ? { count, coverage: "partial" as const, detail: problems.join("; ") } : count;
 }
 
 // OWD is exposed on the same CustomObject metadata record standard objects that support
@@ -506,7 +520,7 @@ export async function runScan(connectionId: string) {
   const scan = await prisma.scan.create({ data: { connectionId } });
   const targetNames = await listObjectTargets(conn);
 
-  const sections: Array<[string, () => Promise<number>]> = [
+  const sections: Array<[string, () => Promise<SectionOutcome>]> = [
     ["objects", () => scanObjectsAndFields(conn, scan.id, targetNames)],
     ["apex_classes", () => scanApexClasses(conn, scan.id)],
     ["triggers", () => scanTriggers(conn, scan.id)],
@@ -524,16 +538,49 @@ export async function runScan(connectionId: string) {
     ["role_hierarchy", () => scanRoleHierarchy(conn, scan.id)],
   ];
 
+  // A section that throws is recorded as degraded, so the graph stage never retires rows because a
+  // section came back empty by failure rather than because the org has none.
+  const sectionCoverage = new Map<string, SectionCoverage>();
+  let degraded = false;
   for (const [category, run] of sections) {
+    let record: { itemCount: number; coverage: SectionCoverage["coverage"]; coverageDetail: string | null };
     try {
-      const itemCount = await run();
-      await prisma.scanResult.create({ data: { scanId: scan.id, category, itemCount } });
+      const outcome = await run();
+      record =
+        typeof outcome === "number"
+          ? { itemCount: outcome, coverage: "complete", coverageDetail: null }
+          : { itemCount: outcome.count, coverage: outcome.coverage, coverageDetail: outcome.detail ?? null };
     } catch (err) {
       console.warn(`scan section "${category}" failed:`, (err as Error).message);
-      await prisma.scanResult.create({ data: { scanId: scan.id, category, itemCount: 0 } });
+      record = { itemCount: 0, coverage: "degraded", coverageDetail: String((err as Error).message).slice(0, 300) };
+      degraded = true;
     }
+    sectionCoverage.set(category, { coverage: record.coverage, detail: record.coverageDetail });
+    await prisma.scanResult.create({ data: { scanId: scan.id, category, ...record } });
   }
 
-  await prisma.scan.update({ where: { id: scan.id }, data: { status: "completed", finishedAt: new Date() } });
+  // The graph is derived from what the sections just stored. Its failure must not lose the scan.
+  try {
+    const connection = await prisma.salesforceConnection.findUnique({ where: { id: connectionId }, select: { graphSettings: true } });
+    const result = await runGraphStage({
+      source: new JsforceGraphSource(conn),
+      inputs: new PrismaScanInputs(prisma, scan.id),
+      repository: new PrismaGraphRepository(prisma),
+      connectionId,
+      scanId: scan.id,
+      settings: resolveGraphSettings(connection?.graphSettings),
+      sections: sectionCoverage,
+    });
+    for (const r of result.records) await prisma.scanResult.create({ data: { scanId: scan.id, ...r } });
+    if (result.degraded) degraded = true;
+  } catch (err) {
+    console.warn("graph stage failed:", (err as Error).message);
+    await prisma.scanResult.create({
+      data: { scanId: scan.id, category: "graph", itemCount: 0, coverage: "degraded", coverageDetail: String((err as Error).message).slice(0, 300) },
+    });
+    degraded = true;
+  }
+
+  await prisma.scan.update({ where: { id: scan.id }, data: { status: degraded ? "completed_with_errors" : "completed", finishedAt: new Date() } });
   return scan.id;
 }

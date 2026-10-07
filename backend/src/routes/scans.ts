@@ -94,7 +94,7 @@ scansRouter.get("/:id/diff", async (req, res) => {
   if (!scan) return res.status(404).json({ error: "Scan not found" });
 
   const previousScan = await prisma.scan.findFirst({
-    where: { connectionId: scan.connectionId, status: "completed", startedAt: { lt: scan.startedAt } },
+    where: { connectionId: scan.connectionId, status: { in: ["completed", "completed_with_errors"] }, startedAt: { lt: scan.startedAt } },
     orderBy: { startedAt: "desc" },
   });
   if (!previousScan) return res.json({ previousScanId: null, newFindings: [], resolvedFindings: [] });

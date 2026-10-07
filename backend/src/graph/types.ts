@@ -21,3 +21,17 @@ export type EdgeDraft = {
   confidence: Confidence;
   attributes: Record<string, unknown>;
 };
+
+// What a pure scanner returns. `ids` maps Salesforce record Ids to node keys so the dependency
+// stage can resolve MetadataComponentDependency endpoints without guessing at names.
+export type ScannerOutput = {
+  nodes: NodeDraft[];
+  edges: EdgeDraft[];
+  ids: Array<[sfId: string, nodeKey: string]>;
+};
+
+export const emptyOutput = (): ScannerOutput => ({ nodes: [], edges: [], ids: [] });
+
+// Edges are retired per (edge type, source node type): "REFERENCES from Apex classes" is owned by the
+// class stage, "REFERENCES from Apex triggers" by the trigger stage. A null source type means any.
+export type EdgeScope = { typeKey: string; sourceTypeKey: string | null };

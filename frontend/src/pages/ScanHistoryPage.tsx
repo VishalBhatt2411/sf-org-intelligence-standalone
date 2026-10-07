@@ -4,6 +4,7 @@ import { api, HealthHistoryPoint, Scan } from "../api/client";
 
 const STATUS_COLOR: Record<string, "success" | "warning" | "error" | "default"> = {
   completed: "success",
+  completed_with_errors: "warning",
   running: "warning",
   failed: "error",
 };
