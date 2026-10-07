@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Generate Prisma client
+        run: npm run prisma:generate -w backend
+        env:
+          # Only needs a syntactically valid URL to load the schema, not a live DB.
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/sf_tech_debt
+
+      - name: Backend typecheck & build
+        run: npm run build -w backend
+
+      - name: Backend tests
+        run: npm test -w backend
+        env:
+          JWT_SECRET: ci-test-secret
+          TOKEN_ENCRYPTION_KEY: ci-test-key
+
+      - name: Frontend typecheck & build
+        run: npm run build -w frontend
+        env:
+          VITE_API_URL: http://localhost:4000

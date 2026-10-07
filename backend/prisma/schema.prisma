@@ -1,0 +1,326 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Organization {
+  id          String   @id @default(uuid())
+  name        String
+  createdAt   DateTime @default(now()) @map("created_at")
+  users       User[]
+  connections SalesforceConnection[]
+
+  @@map("organizations")
+}
+
+model User {
+  id             String       @id @default(uuid())
+  organizationId String       @map("organization_id")
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  email          String       @unique
+  name           String?
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  @@map("users")
+}
+
+model SalesforceConnection {
+  id                String       @id @default(uuid())
+  organizationId    String       @map("organization_id")
+  organization      Organization @relation(fields: [organizationId], references: [id])
+  instanceUrl       String       @map("instance_url")
+  sfOrgId           String       @map("sf_org_id")
+  username          String       @default("")
+  accessToken       String       @map("access_token")
+  refreshToken      String       @map("refresh_token")
+  loginUrl          String       @default("https://login.salesforce.com") @map("login_url")
+  scheduleFrequency String       @default("off") @map("schedule_frequency")
+  nextScanAt        DateTime?    @map("next_scan_at")
+  createdAt         DateTime     @default(now()) @map("created_at")
+  scans             Scan[]
+
+  @@map("salesforce_connections")
+}
+
+model Scan {
+  id           String               @id @default(uuid())
+  connectionId String               @map("connection_id")
+  connection   SalesforceConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  status       String               @default("running")
+  startedAt    DateTime             @default(now()) @map("started_at")
+  finishedAt   DateTime?            @map("finished_at")
+
+  results      ScanResult[]
+  findings     Finding[]
+  objects      SfObject[]
+  apexClasses  ApexClass[]
+  triggers     ApexTrigger[]
+  flows        Flow[]
+  permissionSets PermissionSet[]
+  profiles     Profile[]
+  lwcComponents LwcComponent[]
+  dependencies ComponentDependency[]
+  orgWideDefaults OrgWideDefault[]
+  sharingRules SharingRule[]
+  userRoles    UserRole[]
+  emailTemplates EmailTemplate[]
+  visualforcePages VisualforcePage[]
+  visualforceComponents VisualforceComponent[]
+  installedPackages InstalledPackage[]
+  workflowRules WorkflowRule[]
+
+  @@map("scans")
+}
+
+model ScanResult {
+  id        String   @id @default(uuid())
+  scanId    String   @map("scan_id")
+  scan      Scan     @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  category  String
+  itemCount Int      @map("item_count")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("scan_results")
+}
+
+model Finding {
+  id             String   @id @default(uuid())
+  scanId         String   @map("scan_id")
+  scan           Scan     @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  category       String
+  ruleKey        String   @map("rule_key")
+  severity       String
+  title          String
+  detail         String
+  componentType  String   @map("component_type")
+  componentName  String   @map("component_name")
+  status         String   @default("open")
+  assignedTo     String?  @map("assigned_to")
+  createdAt      DateTime @default(now()) @map("created_at")
+  recommendations AiRecommendation[]
+
+  @@map("findings")
+}
+
+model SfObject {
+  id         String  @id @default(uuid())
+  scanId     String  @map("scan_id")
+  scan       Scan    @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  apiName    String  @map("api_name")
+  label      String
+  fieldCount Int     @map("field_count")
+  sfId       String? @map("sf_id")
+  fields     SfField[]
+
+  @@map("objects")
+}
+
+model SfField {
+  id       String   @id @default(uuid())
+  objectId String   @map("object_id")
+  object   SfObject @relation(fields: [objectId], references: [id], onDelete: Cascade)
+  apiName     String   @map("api_name")
+  type        String
+  referenceTo Json?    @map("reference_to")
+  sfId        String?  @map("sf_id")
+
+  @@map("fields")
+}
+
+// Real Salesforce dependency edges from Tooling API's MetadataComponentDependency —
+// componentId/Name/Type is the referencer, refComponentId/Name/Type is what it references.
+model ComponentDependency {
+  id               String @id @default(uuid())
+  scanId           String @map("scan_id")
+  scan             Scan   @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  componentId      String @map("component_id")
+  componentName    String @map("component_name")
+  componentType    String @map("component_type")
+  refComponentId   String @map("ref_component_id")
+  refComponentName String @map("ref_component_name")
+  refComponentType String @map("ref_component_type")
+
+  @@map("component_dependencies")
+}
+
+model Flow {
+  id          String   @id @default(uuid())
+  scanId      String   @map("scan_id")
+  scan        Scan     @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  apiName     String   @map("api_name")
+  label       String
+  status      String
+  triggerType String?  @map("trigger_type")
+  objectName  String?  @map("object_name")
+  definition  Json?
+  sfId        String?  @map("sf_id")
+
+  @@map("flows")
+}
+
+model ApexClass {
+  id        String  @id @default(uuid())
+  scanId    String  @map("scan_id")
+  scan      Scan    @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  name      String
+  body      String
+  lineCount Int     @map("line_count")
+  sfId      String? @map("sf_id")
+
+  @@map("apex_classes")
+}
+
+model ApexTrigger {
+  id         String  @id @default(uuid())
+  scanId     String  @map("scan_id")
+  scan       Scan    @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  name       String
+  objectName String  @map("object_name")
+  body       String
+  sfId       String? @map("sf_id")
+
+  @@map("triggers")
+}
+
+model PermissionSet {
+  id       String  @id @default(uuid())
+  scanId   String  @map("scan_id")
+  scan     Scan    @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  name     String
+  permJson Json    @map("perm_json")
+  sfId     String? @map("sf_id")
+
+  @@map("permission_sets")
+}
+
+model Profile {
+  id       String  @id @default(uuid())
+  scanId   String  @map("scan_id")
+  scan     Scan    @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  name     String
+  permJson Json    @map("perm_json")
+  sfId     String? @map("sf_id")
+
+  @@map("profiles")
+}
+
+model LwcComponent {
+  id      String  @id @default(uuid())
+  scanId  String  @map("scan_id")
+  scan    Scan    @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  apiName String  @map("api_name")
+  source  String
+  sfId    String? @map("sf_id")
+
+  @@map("lwc_components")
+}
+
+model OrgWideDefault {
+  id                   String  @id @default(uuid())
+  scanId               String  @map("scan_id")
+  scan                 Scan    @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  apiName              String  @map("api_name")
+  internalSharingModel String  @map("internal_sharing_model")
+  externalSharingModel String? @map("external_sharing_model")
+
+  @@map("org_wide_defaults")
+}
+
+model SharingRule {
+  id          String @id @default(uuid())
+  scanId      String @map("scan_id")
+  scan        Scan   @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  name        String
+  objectName  String @map("object_name")
+  ruleType    String @map("rule_type")
+  accessLevel String @map("access_level")
+
+  @@map("sharing_rules")
+}
+
+model UserRole {
+  id            String  @id @default(uuid())
+  scanId        String  @map("scan_id")
+  scan          Scan    @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  name          String
+  developerName String  @map("developer_name")
+  parentRoleId  String? @map("parent_role_id")
+  sfId          String? @map("sf_id")
+
+  @@map("user_roles")
+}
+
+model WorkflowRule {
+  id          String  @id @default(uuid())
+  scanId      String  @map("scan_id")
+  scan        Scan    @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  name        String
+  objectName  String  @map("object_name")
+  active      Boolean @default(false)
+  triggerType String? @map("trigger_type")
+  sfId        String? @map("sf_id")
+
+  @@map("workflow_rules")
+}
+
+model EmailTemplate {
+  id            String  @id @default(uuid())
+  scanId        String  @map("scan_id")
+  scan          Scan    @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  name          String
+  developerName String  @map("developer_name")
+  templateType  String  @map("template_type")
+  isActive      Boolean @default(true) @map("is_active")
+  sfId          String? @map("sf_id")
+
+  @@map("email_templates")
+}
+
+model VisualforcePage {
+  id     String  @id @default(uuid())
+  scanId String  @map("scan_id")
+  scan   Scan    @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  name   String
+  markup String
+  sfId   String? @map("sf_id")
+
+  @@map("visualforce_pages")
+}
+
+model VisualforceComponent {
+  id     String  @id @default(uuid())
+  scanId String  @map("scan_id")
+  scan   Scan    @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  name   String
+  markup String
+  sfId   String? @map("sf_id")
+
+  @@map("visualforce_components")
+}
+
+model InstalledPackage {
+  id               String  @id @default(uuid())
+  scanId           String  @map("scan_id")
+  scan             Scan    @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  name             String
+  namespacePrefix  String  @map("namespace_prefix")
+  versionName      String? @map("version_name")
+  versionNumber    String? @map("version_number")
+
+  @@map("installed_packages")
+}
+
+model AiRecommendation {
+  id         String  @id @default(uuid())
+  findingId  String  @map("finding_id")
+  finding    Finding @relation(fields: [findingId], references: [id], onDelete: Cascade)
+  explanation String
+  recommendation String
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@map("ai_recommendations")
+}
