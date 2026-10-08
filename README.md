@@ -1,6 +1,6 @@
 # Salesforce Technical Debt AI — V1
 
-Connect a Salesforce org, scan its metadata, run rule-based technical debt checks, and get an AI (Claude) explanation + fix recommendation per finding.
+Connect a Salesforce org, scan its metadata, run rule-based technical debt checks, and get an AI (Claude) explanation + fix recommendation per finding. It also carries a ported subset of the Org Intelligence Platform: a **Graph Explorer** and **Org Health** (see below).
 
 ## Stack
 
@@ -60,11 +60,62 @@ The app requires signing in (`backend/src/routes/auth.ts`, `POST /auth/login`) �
 - Debt checks: SOQL/DML-in-loop, hardcoded IDs, large classes, high branch complexity, inactive/duplicate flows, automation sprawl, multiple triggers per object, trigger/flow conflicts, large objects, over-permissioned profiles/permission sets, guest user write access, broad field-edit access, unused fields/objects, likely-duplicate fields
 - Health score (100 minus severity-weighted deductions, per category + overall)
 - AI "Explain" button per finding (Claude call, cached in `ai_recommendations`)
+- Graph Explorer and Org Health tabs (see the section above)
+
+## Graph Explorer and Org Health (ported from Org Intelligence)
+
+Two tabs ported from the Salesforce-native Org Intelligence Platform. Design, scope and the reasons for each
+change from the source are in `docs/PortDesign.md`. Hierarchy Manager is deferred, and the source's Tech Debt
+module is not ported because this app has its own.
+
+**How it is fed.** Every scan now also builds a per-connection metadata graph (nodes and edges in Postgres, see
+the `Graph*` models and the `add_org_health` migration), then refreshes the scan-based Org Health sections.
+Neither stage can fail the scan outright: a graph failure marks the scan `completed_with_errors`, and a health
+failure is only logged. Run `npm run db:migrate` after pulling to create the new tables.
+
+**Graph Explorer** (`frontend/src/explorer`, `backend/src/graph`): search, expand/collapse with reference-counted
+visibility, lane (object) and radial (field) layouts, hub clustering, mini-map, breadcrumbs, dark mode, a detail
+panel and directional impact analysis. The graph is read lazily (expansion capped at 500 nodes, impact at 150).
+
+**Org Health** (`frontend/src/health`, `backend/src/health`): Metadata, Code and Data are scored; Automation and
+Security show facts; Storage reports limits. Scan-based sections update with each scan or on **Refresh**;
+Security and Storage read Salesforce live; the **Data check** runs in the background and is polled. Findings
+carry evidence, risk, remediation and a score breakdown, and can be triaged (status, owner, due date, notes,
+compensating control, risk-acceptance expiry, false-positive reason) with a change history. The Remediation tab
+filters, sorts, pages and exports the queue as CSV. "Open in Graph Explorer" jumps from a finding to its node.
+
+API (all behind `requireAuth`, scoped to the session's connection; any other connection id answers 404):
+
+| Prefix | Routes |
+|---|---|
+| `/connections/:connectionId/graph` | `search`, `browse`, `summary`, `objects/:apiName/fields`, `nodes/:key`, `nodes/:key/expand`, `nodes/:key/impact` |
+| `/connections/:connectionId/health` | `summary`, `severity-registry`, `trend`, `:section`, `:section/drilldown`, `sync/:section`, `data/run`, `findings`, `findings/:id` (+ `related`, `history`, `navigate`, `PATCH`), `remediation`, `remediation/summary`, `remediation/export` |
+
+Behaviour worth knowing:
+
+- Scores are computed on the server; the UI only displays them. Severity bands are Good >= 70, Warning >= 40,
+  Critical < 40, and every badge carries text as well as colour.
+- A live section nobody has run shows "Not run yet"; a partial or unreadable result is flagged and its findings
+  are never auto-resolved on an incomplete run.
+- Thresholds (dependency counts, field counts, data objects, sensitive objects, and so on) are defaults in
+  `HealthConfig` (`backend/src/health/config.ts`). There is no admin screen for them yet.
+- The Data check runs inside the backend process, one per connection at a time. It is not safe across multiple
+  backend instances.
+- Org Health is open to any authenticated user of the organization. The change history records the organization
+  id as the actor because the standalone app has no per-user id.
+
+**Not verified against a live org.** Everything is covered by unit tests with fakes for Salesforce. The Tooling
+and SOQL field names used by Security, Data and Storage (PermissionSet `Permissions*` fields, `ObjectPermissions`,
+`PermissionSetAssignment` aggregates, the `/limits` resource) have not been run against a real org, and the
+frontend has pure-function tests but no DOM tests. Expect to correct field names on first contact.
+
+Not in v1: test coverage in Code Health, field-level security and the Health Check score in Security, native
+duplicate-rule integration in Data Health, Hierarchy Manager.
 
 ## Known simplifications (by design, not oversights)
 
 - **SOQL/DML-in-loop and complexity checks are regex/brace-depth heuristics**, not a real Apex AST parser — good enough to flag likely issues, will have false negatives on unusual formatting.
-- **Unused field/object detection is a substring search** across scanned Apex/trigger/flow text, not a full dependency graph — the Knowledge Graph / Impact Analysis module (Phase 2/6 in the FRD) isn't built yet.
+- **Unused field/object detection is still a substring search** across scanned Apex/trigger/flow text. The Graph Explorer now holds a dependency graph, but the debt checks do not use it yet.
 - **Object scan is limited to custom objects + a small standard-object allowlist** to avoid hundreds of describe calls per scan; widen the allowlist in `backend/src/services/scanEngine.ts` if you need full org coverage.
 - **Single-organization, not multi-tenant** — there's a real login now (see "Auth" above), but every user shares the one `Organization` row and its one Salesforce connection; there's no per-customer data isolation or signup flow.
 - **Empty-field and validation-rule checks are skipped** — empty-field detection needs live record data (aggregate queries per field), not just metadata; validation rules aren't in the FRD's storage schema.
@@ -73,4 +124,4 @@ The app requires signing in (`backend/src/routes/auth.ts`, `POST /auth/login`) �
 
 ## Roadmap (per FRD)
 
-V2 adds Impact Analysis, Automation Dependency Maps, and PDF reports. V3 adds AI Chat, Documentation Generator, and Root Cause Analysis — these need the Knowledge Graph module, which this pass doesn't build.
+V2 adds Automation Dependency Maps and PDF reports (basic Impact Analysis now exists in the Graph Explorer). V3 adds AI Chat, Documentation Generator, and Root Cause Analysis, which can build on the graph.

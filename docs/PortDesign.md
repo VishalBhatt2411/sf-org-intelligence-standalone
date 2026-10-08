@@ -310,3 +310,30 @@ One commit per step.
 - Org Health: confirm the exposure-boost fix and the managed-orphan exclusion (section 8.3), or keep the
   source behaviour exactly.
 - Org Health access control: open to any authenticated user of the organization in v1 (section 8.5)?
+
+## 13. Implementation status and deviations
+
+Steps 1 to 6 of section 10 are done, one commit each. Deviations from the source beyond section 8.3, and
+choices the source did not settle (all are defaults that can be changed):
+
+- Cycles, bands, managed-orphan exclusion, no custom permissions, no "Unknown" object class: as in 8.3.
+- Field counts cover the scanned scope only. Fan-in/out uses REFERENCES plus DEPENDS_ON, de-duplicated by partner.
+- A breach needs the count at or over its threshold and a non-Good signal severity. A finding's score is the
+  signal's badness. A class with no recorded API version is left out of the old-API-version rule.
+- Security reviews custom permission sets and profiles only. Flag points (ModifyAllData 1.5, ViewAllData 1,
+  ManageUsers, AuthorApex and ManageProfilesPermissionsets 0.75, CustomizeApplication 0.5), confidences, the
+  exposure multiplier (no assignees 0.5, 25 or more 1.2) and the sensitive-object defaults (User, Contact, Lead,
+  Case) are heuristics chosen here, not source values.
+- Data: stale records use an exact COUNT(); completeness and duplicates use a deterministic Id-ordered sample of
+  at most 200 records, duplicates being exact case- and space-insensitive matches. Section weights 35/35/30.
+- Storage is facts only: under 80% is "Plenty of room", under 95% "Getting full", otherwise "Nearly full".
+- Triage rules added here: a false positive needs a reason, a new risk-acceptance expiry must be in the future,
+  text fields have length limits, unknown fields are rejected.
+- Remediation is filtered, sorted and paged in memory over lean rows; the API default is all statuses and the UI
+  opens on active ones.
+- The Data run is in-process with one run per connection; a stale "running" row older than 15 minutes is closed
+  as failed. Reading a scan section with no stored snapshot computes it without writing; snapshots are pruned to
+  the newest 100 per section and the trend returns up to 60 points.
+- The post-scan health sync runs only when the graph stage succeeded and never fails the scan.
+
+Unverified: live Salesforce field names (section 8.6) and any DOM-level frontend behaviour.
