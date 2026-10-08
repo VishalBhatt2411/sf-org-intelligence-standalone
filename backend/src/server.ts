@@ -10,6 +10,7 @@ import { scansRouter } from "./routes/scans";
 import { findingsRouter } from "./routes/findings";
 import { connectionsRouter } from "./routes/connections";
 import { graphRouter } from "./routes/graphDefault";
+import { healthRouter } from "./routes/healthDefault";
 import { requireAuth } from "./middleware/requireAuth";
 import { startScheduler } from "./services/scheduler";
 
@@ -26,6 +27,7 @@ app.use("/auth", authRouter);
 app.use("/scans", requireAuth, scansRouter);
 app.use("/findings", requireAuth, findingsRouter);
 app.use("/connections/:connectionId/graph", requireAuth, graphRouter);
+app.use("/connections/:connectionId/health", requireAuth, healthRouter);
 app.use("/connections", requireAuth, connectionsRouter);
 
 app.get("/health", (_req, res) => res.json({ ok: true }));

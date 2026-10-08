@@ -8,9 +8,9 @@ datasource db {
 }
 
 model Organization {
-  id          String   @id @default(uuid())
+  id          String                 @id @default(uuid())
   name        String
-  createdAt   DateTime @default(now()) @map("created_at")
+  createdAt   DateTime               @default(now()) @map("created_at")
   users       User[]
   connections SalesforceConnection[]
 
@@ -29,22 +29,25 @@ model User {
 }
 
 model SalesforceConnection {
-  id                String       @id @default(uuid())
-  organizationId    String       @map("organization_id")
-  organization      Organization @relation(fields: [organizationId], references: [id])
-  instanceUrl       String       @map("instance_url")
-  sfOrgId           String       @map("sf_org_id")
-  username          String       @default("")
-  accessToken       String       @map("access_token")
-  refreshToken      String       @map("refresh_token")
-  loginUrl          String       @default("https://login.salesforce.com") @map("login_url")
-  scheduleFrequency String       @default("off") @map("schedule_frequency")
-  nextScanAt        DateTime?    @map("next_scan_at")
-  graphSettings     Json?        @map("graph_settings")
-  createdAt         DateTime     @default(now()) @map("created_at")
+  id                String              @id @default(uuid())
+  organizationId    String              @map("organization_id")
+  organization      Organization        @relation(fields: [organizationId], references: [id])
+  instanceUrl       String              @map("instance_url")
+  sfOrgId           String              @map("sf_org_id")
+  username          String              @default("")
+  accessToken       String              @map("access_token")
+  refreshToken      String              @map("refresh_token")
+  loginUrl          String              @default("https://login.salesforce.com") @map("login_url")
+  scheduleFrequency String              @default("off") @map("schedule_frequency")
+  nextScanAt        DateTime?           @map("next_scan_at")
+  graphSettings     Json?               @map("graph_settings")
+  createdAt         DateTime            @default(now()) @map("created_at")
   scans             Scan[]
   graphNodes        GraphNode[]
   graphEdges        GraphEdge[]
+  healthFindings    OrgHealthFinding[]
+  healthSnapshots   OrgHealthSnapshot[]
+  healthRuns        OrgHealthRun[]
 
   @@map("salesforce_connections")
 }
@@ -57,78 +60,78 @@ model Scan {
   startedAt    DateTime             @default(now()) @map("started_at")
   finishedAt   DateTime?            @map("finished_at")
 
-  results      ScanResult[]
-  findings     Finding[]
-  objects      SfObject[]
-  apexClasses  ApexClass[]
-  triggers     ApexTrigger[]
-  flows        Flow[]
-  permissionSets PermissionSet[]
-  profiles     Profile[]
-  lwcComponents LwcComponent[]
-  dependencies ComponentDependency[]
-  orgWideDefaults OrgWideDefault[]
-  sharingRules SharingRule[]
-  userRoles    UserRole[]
-  emailTemplates EmailTemplate[]
-  visualforcePages VisualforcePage[]
+  results               ScanResult[]
+  findings              Finding[]
+  objects               SfObject[]
+  apexClasses           ApexClass[]
+  triggers              ApexTrigger[]
+  flows                 Flow[]
+  permissionSets        PermissionSet[]
+  profiles              Profile[]
+  lwcComponents         LwcComponent[]
+  dependencies          ComponentDependency[]
+  orgWideDefaults       OrgWideDefault[]
+  sharingRules          SharingRule[]
+  userRoles             UserRole[]
+  emailTemplates        EmailTemplate[]
+  visualforcePages      VisualforcePage[]
   visualforceComponents VisualforceComponent[]
-  installedPackages InstalledPackage[]
-  workflowRules WorkflowRule[]
+  installedPackages     InstalledPackage[]
+  workflowRules         WorkflowRule[]
 
   @@map("scans")
 }
 
 model ScanResult {
-  id        String   @id @default(uuid())
-  scanId    String   @map("scan_id")
-  scan      Scan     @relation(fields: [scanId], references: [id], onDelete: Cascade)
-  category  String
-  itemCount Int      @map("item_count")
+  id             String   @id @default(uuid())
+  scanId         String   @map("scan_id")
+  scan           Scan     @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  category       String
+  itemCount      Int      @map("item_count")
   // Graph scan stages record how complete the stage was: complete | partial | degraded.
   coverage       String?
-  coverageDetail String? @map("coverage_detail")
-  createdAt DateTime @default(now()) @map("created_at")
+  coverageDetail String?  @map("coverage_detail")
+  createdAt      DateTime @default(now()) @map("created_at")
 
   @@map("scan_results")
 }
 
 model Finding {
-  id             String   @id @default(uuid())
-  scanId         String   @map("scan_id")
-  scan           Scan     @relation(fields: [scanId], references: [id], onDelete: Cascade)
-  category       String
-  ruleKey        String   @map("rule_key")
-  severity       String
-  title          String
-  detail         String
-  componentType  String   @map("component_type")
-  componentName  String   @map("component_name")
-  status         String   @default("open")
-  assignedTo     String?  @map("assigned_to")
-  createdAt      DateTime @default(now()) @map("created_at")
+  id              String             @id @default(uuid())
+  scanId          String             @map("scan_id")
+  scan            Scan               @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  category        String
+  ruleKey         String             @map("rule_key")
+  severity        String
+  title           String
+  detail          String
+  componentType   String             @map("component_type")
+  componentName   String             @map("component_name")
+  status          String             @default("open")
+  assignedTo      String?            @map("assigned_to")
+  createdAt       DateTime           @default(now()) @map("created_at")
   recommendations AiRecommendation[]
 
   @@map("findings")
 }
 
 model SfObject {
-  id         String  @id @default(uuid())
-  scanId     String  @map("scan_id")
-  scan       Scan    @relation(fields: [scanId], references: [id], onDelete: Cascade)
-  apiName    String  @map("api_name")
+  id         String    @id @default(uuid())
+  scanId     String    @map("scan_id")
+  scan       Scan      @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  apiName    String    @map("api_name")
   label      String
-  fieldCount Int     @map("field_count")
-  sfId       String? @map("sf_id")
+  fieldCount Int       @map("field_count")
+  sfId       String?   @map("sf_id")
   fields     SfField[]
 
   @@map("objects")
 }
 
 model SfField {
-  id       String   @id @default(uuid())
-  objectId String   @map("object_id")
-  object   SfObject @relation(fields: [objectId], references: [id], onDelete: Cascade)
+  id          String   @id @default(uuid())
+  objectId    String   @map("object_id")
+  object      SfObject @relation(fields: [objectId], references: [id], onDelete: Cascade)
   apiName     String   @map("api_name")
   type        String
   referenceTo Json?    @map("reference_to")
@@ -154,28 +157,30 @@ model ComponentDependency {
 }
 
 model Flow {
-  id          String   @id @default(uuid())
-  scanId      String   @map("scan_id")
-  scan        Scan     @relation(fields: [scanId], references: [id], onDelete: Cascade)
-  apiName     String   @map("api_name")
+  id          String  @id @default(uuid())
+  scanId      String  @map("scan_id")
+  scan        Scan    @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  apiName     String  @map("api_name")
   label       String
   status      String
-  triggerType String?  @map("trigger_type")
-  objectName  String?  @map("object_name")
+  triggerType String? @map("trigger_type")
+  objectName  String? @map("object_name")
   definition  Json?
-  sfId        String?  @map("sf_id")
+  sfId        String? @map("sf_id")
 
   @@map("flows")
 }
 
 model ApexClass {
-  id        String  @id @default(uuid())
-  scanId    String  @map("scan_id")
-  scan      Scan    @relation(fields: [scanId], references: [id], onDelete: Cascade)
-  name      String
-  body      String
-  lineCount Int     @map("line_count")
-  sfId      String? @map("sf_id")
+  id         String  @id @default(uuid())
+  scanId     String  @map("scan_id")
+  scan       Scan    @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  name       String
+  body       String
+  lineCount  Int     @map("line_count")
+  sfId       String? @map("sf_id")
+  // Tooling ApexClass.ApiVersion; null for rows scanned before it was captured.
+  apiVersion Float?  @map("api_version")
 
   @@map("apex_classes")
 }
@@ -309,24 +314,24 @@ model VisualforceComponent {
 }
 
 model InstalledPackage {
-  id               String  @id @default(uuid())
-  scanId           String  @map("scan_id")
-  scan             Scan    @relation(fields: [scanId], references: [id], onDelete: Cascade)
-  name             String
-  namespacePrefix  String  @map("namespace_prefix")
-  versionName      String? @map("version_name")
-  versionNumber    String? @map("version_number")
+  id              String  @id @default(uuid())
+  scanId          String  @map("scan_id")
+  scan            Scan    @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  name            String
+  namespacePrefix String  @map("namespace_prefix")
+  versionName     String? @map("version_name")
+  versionNumber   String? @map("version_number")
 
   @@map("installed_packages")
 }
 
 model AiRecommendation {
-  id         String  @id @default(uuid())
-  findingId  String  @map("finding_id")
-  finding    Finding @relation(fields: [findingId], references: [id], onDelete: Cascade)
-  explanation String
+  id             String   @id @default(uuid())
+  findingId      String   @map("finding_id")
+  finding        Finding  @relation(fields: [findingId], references: [id], onDelete: Cascade)
+  explanation    String
   recommendation String
-  createdAt  DateTime @default(now()) @map("created_at")
+  createdAt      DateTime @default(now()) @map("created_at")
 
   @@map("ai_recommendations")
 }
@@ -378,4 +383,99 @@ model GraphEdge {
   @@index([connectionId, sourceNodeKey])
   @@index([connectionId, targetNodeKey])
   @@map("graph_edges")
+}
+
+// ---- Org Health -------------------------------------------------------------------------------
+
+// One row per detected issue, identified by a fingerprint of section + rule + component so the same
+// problem is the same row across scans. Rows are never deleted: a finding that stops being detected
+// is auto-resolved, which keeps its triage history.
+model OrgHealthFinding {
+  id                   String                  @id @default(uuid())
+  connectionId         String                  @map("connection_id")
+  connection           SalesforceConnection    @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  fingerprint          String
+  section              String
+  ruleKey              String                  @map("rule_key")
+  ruleVersion          Int                     @default(1) @map("rule_version")
+  componentKey         String                  @map("component_key")
+  componentType        String                  @map("component_type")
+  componentLabel       String                  @map("component_label")
+  title                String
+  severity             String
+  confidence           String
+  score                Float
+  status               String                  @default("open")
+  evidence             String
+  measured             String
+  expected             String
+  explanation          String
+  risk                 String
+  impact               String
+  remediation          String
+  validation           String
+  contributors         Json
+  owner                String?
+  dueDate              DateTime?               @map("due_date")
+  notes                String?
+  compensatingControl  String?                 @map("compensating_control")
+  riskAcceptanceExpiry DateTime?               @map("risk_acceptance_expiry")
+  falsePositiveReason  String?                 @map("false_positive_reason")
+  firstDetectedAt      DateTime                @default(now()) @map("first_detected_at")
+  lastDetectedAt       DateTime                @default(now()) @map("last_detected_at")
+  resolvedAt           DateTime?               @map("resolved_at")
+  lastRunId            String?                 @map("last_run_id")
+  updatedAt            DateTime                @updatedAt @map("updated_at")
+  events               OrgHealthFindingEvent[]
+
+  @@unique([connectionId, fingerprint])
+  @@index([connectionId, section, status])
+  @@index([connectionId, componentKey])
+  @@map("org_health_findings")
+}
+
+// Append-only audit of every field change on a finding (triage edits and automatic transitions).
+model OrgHealthFindingEvent {
+  id        String           @id @default(uuid())
+  findingId String           @map("finding_id")
+  finding   OrgHealthFinding @relation(fields: [findingId], references: [id], onDelete: Cascade)
+  field     String
+  oldValue  String?          @map("old_value")
+  newValue  String?          @map("new_value")
+  changedBy String           @map("changed_by")
+  changedAt DateTime         @default(now()) @map("changed_at")
+
+  @@index([findingId, changedAt])
+  @@map("org_health_finding_events")
+}
+
+// The computed result of one section at one point in time; the newest per section is what the section
+// endpoints serve, and the series over time is the trend.
+model OrgHealthSnapshot {
+  id           String               @id @default(uuid())
+  connectionId String               @map("connection_id")
+  connection   SalesforceConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  section      String
+  score        Float?
+  severity     String?
+  result       Json
+  createdAt    DateTime             @default(now()) @map("created_at")
+
+  @@index([connectionId, section, createdAt])
+  @@map("org_health_snapshots")
+}
+
+// A Data Health run (live sampling can take a while, so it runs in the background and is polled).
+model OrgHealthRun {
+  id           String               @id @default(uuid())
+  connectionId String               @map("connection_id")
+  connection   SalesforceConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  section      String
+  status       String               @default("running")
+  message      String?
+  startedAt    DateTime             @default(now()) @map("started_at")
+  finishedAt   DateTime?            @map("finished_at")
+
+  @@index([connectionId, section, startedAt])
+  @@map("org_health_runs")
 }

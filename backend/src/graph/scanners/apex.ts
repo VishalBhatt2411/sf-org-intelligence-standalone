@@ -51,7 +51,7 @@ export function scanApexClasses(classes: ApexClassInput[]): ScannerOutput {
     const { key, draft } = nodeDraft("ApexClass", {
       fqn: apexClass.name,
       label: apexClass.name,
-      attributes: { lineCount: apexClass.lineCount },
+      attributes: { lineCount: apexClass.lineCount, apiVersion: apexClass.apiVersion ?? null },
     });
     out.nodes.push(draft);
     if (apexClass.sfId) out.ids.push([apexClass.sfId, key]);

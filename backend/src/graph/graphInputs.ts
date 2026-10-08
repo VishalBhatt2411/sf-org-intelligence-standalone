@@ -53,7 +53,7 @@ export class PrismaScanInputs implements ScanInputs {
   }
 
   async apexClasses(): Promise<ApexClassInput[]> {
-    return this.db.apexClass.findMany({ where: { scanId: this.scanId }, select: { name: true, sfId: true, body: true, lineCount: true } });
+    return this.db.apexClass.findMany({ where: { scanId: this.scanId }, select: { name: true, sfId: true, body: true, lineCount: true, apiVersion: true } });
   }
 
   async triggers(): Promise<ApexTriggerInput[]> {

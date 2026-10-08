@@ -16,7 +16,7 @@ export type DescribedField = {
 
 export type DescribedObject = { name: string; fields: DescribedField[] };
 
-export type ApexClassInput = { name: string; sfId: string | null; body: string; lineCount: number };
+export type ApexClassInput = { name: string; sfId: string | null; body: string; lineCount: number; apiVersion?: number | null };
 
 // `objectName` is TableEnumOrId: an object name for standard objects, a record Id for custom ones.
 export type ApexTriggerInput = { name: string; sfId: string | null; objectName: string; body: string };

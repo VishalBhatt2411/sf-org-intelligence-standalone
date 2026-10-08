@@ -6,6 +6,7 @@ import { PrismaGraphRepository } from "../graph/graphRepository";
 import { JsforceGraphSource } from "../graph/graphSource";
 import { runGraphStage, type SectionCoverage } from "../graph/graphStage";
 import { resolveGraphSettings } from "../graph/settings";
+import { healthService } from "../health/defaultHealthService";
 
 // A section returns its item count, or a count with a coverage note when it knows it saw less than all.
 type SectionOutcome = number | { count: number; coverage: SectionCoverage["coverage"]; detail?: string | null };
@@ -223,8 +224,8 @@ async function scanRoleHierarchy(conn: Connection, scanId: string) {
 
 async function scanApexClasses(conn: Connection, scanId: string) {
   // Body is a long-text field — Tooling API rejects it in a WHERE clause (INVALID_FIELD).
-  const result = await conn.tooling.query<{ Id: string; Name: string; Body: string | null }>(
-    "SELECT Id, Name, Body FROM ApexClass"
+  const result = await conn.tooling.query<{ Id: string; Name: string; Body: string | null; ApiVersion: number | null }>(
+    "SELECT Id, Name, Body, ApiVersion FROM ApexClass"
   );
   const withBody = result.records.filter((r) => r.Body);
 
@@ -235,6 +236,7 @@ async function scanApexClasses(conn: Connection, scanId: string) {
       body: r.Body!,
       lineCount: r.Body!.split("\n").length,
       sfId: r.Id,
+      apiVersion: r.ApiVersion ?? null,
     })),
   });
 
@@ -560,6 +562,7 @@ export async function runScan(connectionId: string) {
   }
 
   // The graph is derived from what the sections just stored. Its failure must not lose the scan.
+  let graphBuilt = false;
   try {
     const connection = await prisma.salesforceConnection.findUnique({ where: { id: connectionId }, select: { graphSettings: true } });
     const result = await runGraphStage({
@@ -573,12 +576,23 @@ export async function runScan(connectionId: string) {
     });
     for (const r of result.records) await prisma.scanResult.create({ data: { scanId: scan.id, ...r } });
     if (result.degraded) degraded = true;
+    graphBuilt = true;
   } catch (err) {
     console.warn("graph stage failed:", (err as Error).message);
     await prisma.scanResult.create({
       data: { scanId: scan.id, category: "graph", itemCount: 0, coverage: "degraded", coverageDetail: String((err as Error).message).slice(0, 300) },
     });
     degraded = true;
+  }
+
+  // Org Health reads the fresh graph. A graph that failed to build is not analysed (it would be stale), and a
+  // health failure never fails the scan.
+  if (graphBuilt) {
+    try {
+      await healthService.syncAfterScan(connectionId);
+    } catch (err) {
+      console.warn("org health sync after scan failed:", (err as Error).message);
+    }
   }
 
   await prisma.scan.update({ where: { id: scan.id }, data: { status: degraded ? "completed_with_errors" : "completed", finishedAt: new Date() } });
