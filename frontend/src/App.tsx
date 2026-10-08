@@ -36,6 +36,7 @@ import { FindingsPage, FindingsFilter } from "./pages/FindingsPage";
 import { ComponentsPage } from "./pages/ComponentsPage";
 import { ScanHistoryPage } from "./pages/ScanHistoryPage";
 import { ExplorerPage } from "./explorer/ExplorerPage";
+import { HealthPage } from "./health/HealthPage";
 import { SEVERITY_COLOR } from "./severity";
 import { useToast } from "./toast";
 
@@ -462,13 +463,14 @@ function GlobalSearch({
   );
 }
 
-type Tab = "dashboard" | "findings" | "components" | "explorer" | "history";
+type Tab = "dashboard" | "findings" | "components" | "explorer" | "health" | "history";
 
 const NAV_ITEMS: { value: Tab; label: string }[] = [
   { value: "dashboard", label: "Dashboard" },
   { value: "findings", label: "Findings" },
   { value: "components", label: "Components" },
   { value: "explorer", label: "Graph Explorer" },
+  { value: "health", label: "Org Health" },
 ];
 
 function totalComponentCount(u: ComponentUsage) {
@@ -710,6 +712,7 @@ const PAGE_TITLE: Record<Tab, string> = {
   findings: "Findings",
   components: "Components",
   explorer: "Graph Explorer",
+  health: "Org Health",
   history: "Scan History",
 };
 
@@ -785,6 +788,9 @@ function AuthedApp() {
     setComponentsSearch(apiName);
     setTab("components");
   }
+
+  // A node picked in Org Health opens in the Graph Explorer, focused on it.
+  const [explorerFocus, setExplorerFocus] = useState<string | null>(null);
 
   function selectTab(next: Tab) {
     if (next === "findings" && tab !== "findings") setFindingsFilter(undefined);
@@ -899,7 +905,17 @@ function AuthedApp() {
             />
           )
         ) : tab === "explorer" ? (
-          effectiveConnectionId && <ExplorerPage connectionId={effectiveConnectionId} />
+          effectiveConnectionId && <ExplorerPage connectionId={effectiveConnectionId} initialNodeKey={explorerFocus} onInitialNodeHandled={() => setExplorerFocus(null)} />
+        ) : tab === "health" ? (
+          effectiveConnectionId && (
+            <HealthPage
+              connectionId={effectiveConnectionId}
+              onOpenInExplorer={(nodeKey) => {
+                setExplorerFocus(nodeKey);
+                setTab("explorer");
+              }}
+            />
+          )
         ) : !activeScan ? (
           <Box sx={{ display: "flex", justifyContent: "center", pt: 10 }}>
             <Paper sx={{ p: 5, maxWidth: 420, textAlign: "center" }}>

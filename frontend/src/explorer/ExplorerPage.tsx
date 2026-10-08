@@ -25,7 +25,14 @@ const readDark = (): boolean => {
 
 type Impact = { key: string; direction: ImpactDirection; depth: number };
 
-export function ExplorerPage({ connectionId }: { connectionId: string }) {
+type ExplorerPageProps = {
+  connectionId: string;
+  // A node to focus on arrival (e.g. from an Org Health finding); reported back once handled.
+  initialNodeKey?: string | null;
+  onInitialNodeHandled?: () => void;
+};
+
+export function ExplorerPage({ connectionId, initialNodeKey = null, onInitialNodeHandled }: ExplorerPageProps) {
   const notify = useToast();
   const ex = useExplorer(connectionId);
   const { api, state } = ex;
@@ -42,6 +49,26 @@ export function ExplorerPage({ connectionId }: { connectionId: string }) {
     enabled: Boolean(impact),
     staleTime: 30_000,
   });
+
+  useEffect(() => {
+    if (!initialNodeKey) return;
+    let cancelled = false;
+    api
+      .detail(initialNodeKey)
+      .then((detail) => {
+        if (!cancelled) ex.focus(detail.node);
+      })
+      .catch((e) => {
+        if (!cancelled) notify(errorMessage(e), "error");
+      })
+      .finally(() => {
+        if (!cancelled) onInitialNodeHandled?.();
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialNodeKey]);
 
   // A new focus starts a clean picture.
   useEffect(() => {
