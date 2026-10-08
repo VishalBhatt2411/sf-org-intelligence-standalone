@@ -35,6 +35,7 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { FindingsPage, FindingsFilter } from "./pages/FindingsPage";
 import { ComponentsPage } from "./pages/ComponentsPage";
 import { ScanHistoryPage } from "./pages/ScanHistoryPage";
+import { ExplorerPage } from "./explorer/ExplorerPage";
 import { SEVERITY_COLOR } from "./severity";
 import { useToast } from "./toast";
 
@@ -461,12 +462,13 @@ function GlobalSearch({
   );
 }
 
-type Tab = "dashboard" | "findings" | "components" | "history";
+type Tab = "dashboard" | "findings" | "components" | "explorer" | "history";
 
 const NAV_ITEMS: { value: Tab; label: string }[] = [
   { value: "dashboard", label: "Dashboard" },
   { value: "findings", label: "Findings" },
   { value: "components", label: "Components" },
+  { value: "explorer", label: "Graph Explorer" },
 ];
 
 function totalComponentCount(u: ComponentUsage) {
@@ -707,6 +709,7 @@ const PAGE_TITLE: Record<Tab, string> = {
   dashboard: "Dashboard",
   findings: "Findings",
   components: "Components",
+  explorer: "Graph Explorer",
   history: "Scan History",
 };
 
@@ -895,6 +898,8 @@ function AuthedApp() {
               }}
             />
           )
+        ) : tab === "explorer" ? (
+          effectiveConnectionId && <ExplorerPage connectionId={effectiveConnectionId} />
         ) : !activeScan ? (
           <Box sx={{ display: "flex", justifyContent: "center", pt: 10 }}>
             <Paper sx={{ p: 5, maxWidth: 420, textAlign: "center" }}>
