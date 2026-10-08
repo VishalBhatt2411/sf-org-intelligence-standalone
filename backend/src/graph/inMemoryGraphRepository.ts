@@ -1,14 +1,20 @@
 import type { EdgeRow, GraphRepository, NodeRow, RetireResult, StoredRef } from "./graphRepository";
+import type { EdgesOfOptions, GraphCoverage, GraphReadRepository, StoredEdge as ReadEdge, StoredNode as ReadNode, TypeCount } from "./graphReadRepository";
 import type { EdgeScope, GraphState } from "./types";
 
 type StoredNode = NodeRow & { state: GraphState; firstSeenScanId: string; lastSeenScanId: string };
 type StoredEdge = EdgeRow & { state: GraphState; firstSeenScanId: string; lastSeenScanId: string };
 
-// Test double with the same semantics as the Prisma implementation, including the retire rules.
-// A transaction is a snapshot that is discarded if the work throws.
-export class InMemoryGraphRepository implements GraphRepository {
+const byText = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
+// Test double with the same semantics as the Prisma implementation, including the retire rules and the
+// read queries (active rows only, per connection). A transaction is a snapshot that is discarded if the
+// work throws.
+export class InMemoryGraphRepository implements GraphRepository, GraphReadRepository {
   nodes = new Map<string, StoredNode>();
   edges = new Map<string, StoredEdge>();
+  // What latestCoverage returns; tests set it directly.
+  coverage = new Map<string, GraphCoverage>();
   // Counts of write operations, so tests can assert that unchanged rows are not rewritten.
   calls = { createNodes: 0, createEdges: 0, updateNodes: 0, updateEdges: 0, touchNodes: 0, touchEdges: 0 };
 
@@ -129,5 +135,62 @@ export class InMemoryGraphRepository implements GraphRepository {
       }
     }
     return { nodes, edges };
+  }
+
+  private mine<T extends { state: GraphState }>(map: Map<string, T>, connectionId: string): T[] {
+    const prefix = `${connectionId}\u0000`;
+    return [...map].filter(([id, row]) => id.startsWith(prefix) && row.state === "active").map(([, row]) => row);
+  }
+
+  private readNode = (n: StoredNode): ReadNode => ({ nodeKey: n.nodeKey, typeKey: n.typeKey, label: n.label, fqn: n.fqn, namespace: n.namespace, parentKey: n.parentKey, attributes: { ...n.attributes }, checksum: n.checksum });
+
+  async getNodes(connectionId: string, keys: string[]): Promise<ReadNode[]> {
+    const wanted = new Set(keys);
+    return this.mine(this.nodes, connectionId).filter((n) => wanted.has(n.nodeKey)).map(this.readNode);
+  }
+
+  async edgesOf(connectionId: string, nodeKeys: string[], options: EdgesOfOptions): Promise<ReadEdge[]> {
+    const wanted = new Set(nodeKeys);
+    const types = options.typeKeys ? new Set(options.typeKeys) : null;
+    return this.mine(this.edges, connectionId)
+      .filter((e) => (!types || types.has(e.typeKey)) && ((options.direction !== "in" && wanted.has(e.sourceNodeKey)) || (options.direction !== "out" && wanted.has(e.targetNodeKey))))
+      .sort((a, b) => byText(a.edgeKey, b.edgeKey))
+      .slice(0, options.limit)
+      .map((e) => ({ edgeKey: e.edgeKey, typeKey: e.typeKey, sourceNodeKey: e.sourceNodeKey, targetNodeKey: e.targetNodeKey, confidence: e.confidence, attributes: { ...e.attributes }, checksum: e.checksum }));
+  }
+
+  async searchNodes(connectionId: string, prefix: string, limit: number): Promise<ReadNode[]> {
+    const p = prefix.toLowerCase();
+    return this.mine(this.nodes, connectionId)
+      .filter((n) => n.label.toLowerCase().startsWith(p) || n.fqn.toLowerCase().startsWith(p))
+      .sort((a, b) => byText(a.label, b.label) || byText(a.nodeKey, b.nodeKey))
+      .slice(0, limit)
+      .map(this.readNode);
+  }
+
+  async browseNodes(connectionId: string, typeKey: string, limit: number): Promise<ReadNode[]> {
+    return this.mine(this.nodes, connectionId)
+      .filter((n) => n.typeKey === typeKey)
+      .sort((a, b) => byText(a.label, b.label) || byText(a.nodeKey, b.nodeKey))
+      .slice(0, limit)
+      .map(this.readNode);
+  }
+
+  private count(rows: Array<{ typeKey: string }>): TypeCount[] {
+    const counts = new Map<string, number>();
+    for (const r of rows) counts.set(r.typeKey, (counts.get(r.typeKey) ?? 0) + 1);
+    return [...counts].map(([typeKey, count]) => ({ typeKey, count }));
+  }
+
+  async countNodesByType(connectionId: string): Promise<TypeCount[]> {
+    return this.count(this.mine(this.nodes, connectionId));
+  }
+
+  async countEdgesByType(connectionId: string): Promise<TypeCount[]> {
+    return this.count(this.mine(this.edges, connectionId));
+  }
+
+  async latestCoverage(connectionId: string): Promise<GraphCoverage | null> {
+    return this.coverage.get(connectionId) ?? null;
   }
 }

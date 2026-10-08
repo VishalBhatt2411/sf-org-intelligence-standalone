@@ -9,6 +9,7 @@ import { authRouter } from "./routes/auth";
 import { scansRouter } from "./routes/scans";
 import { findingsRouter } from "./routes/findings";
 import { connectionsRouter } from "./routes/connections";
+import { graphRouter } from "./routes/graphDefault";
 import { requireAuth } from "./middleware/requireAuth";
 import { startScheduler } from "./services/scheduler";
 
@@ -24,6 +25,7 @@ app.use(apiLimiter);
 app.use("/auth", authRouter);
 app.use("/scans", requireAuth, scansRouter);
 app.use("/findings", requireAuth, findingsRouter);
+app.use("/connections/:connectionId/graph", requireAuth, graphRouter);
 app.use("/connections", requireAuth, connectionsRouter);
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
