@@ -12,7 +12,7 @@ export function CoverageBanner({ summary }: { summary: GraphSummary }) {
   if (summary.coverage === "none") return null;
   if (summary.coverage === "complete") {
     return summary.lastScan?.finishedAt ? (
-      <Typography variant="caption" color="text.secondary">
+      <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 2 }}>
         Built from the scan finished {new Date(summary.lastScan.finishedAt).toLocaleString()}.
       </Typography>
     ) : null;

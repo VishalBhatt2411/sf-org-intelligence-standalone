@@ -44,7 +44,9 @@ export function OverviewView({ api, onOpenSection }: Props) {
   const summary = useQuery({ queryKey: ["health-summary", api.key], queryFn: () => api.summary() });
   if (summary.isLoading) return <CircularProgress size={24} />;
   if (summary.isError || !summary.data) return <Alert severity="error">{errorMessage(summary.error)}</Alert>;
-  const { cards, findings } = summary.data;
+  const { findings } = summary.data;
+  // The Overview itself is not a category; its card only carries the roll-up.
+  const cards = summary.data.cards.filter((c) => c.section !== "overview");
 
   const stats: Array<[string, number]> = [
     ["Active findings", findings.active],
@@ -68,11 +70,9 @@ export function OverviewView({ api, onOpenSection }: Props) {
         ))}
       </Box>
       <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 2 }}>
-        {cards
-          .filter((c) => c.section !== "overview")
-          .map((card) => (
-            <CategoryCard key={card.section} card={card} onOpen={() => onOpenSection(card.section)} />
-          ))}
+        {cards.map((card) => (
+          <CategoryCard key={card.section} card={card} onOpen={() => onOpenSection(card.section)} />
+        ))}
       </Box>
       {cards.some((c) => !c.complete && c.computedAt) && (
         <Alert severity="warning">
