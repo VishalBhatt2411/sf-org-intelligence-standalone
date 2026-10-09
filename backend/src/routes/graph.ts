@@ -4,6 +4,7 @@ import { GraphInputError, GraphNotFoundError, NODE_KEY_PATTERN } from "../graph/
 import type { GraphReadRepository } from "../graph/graphReadRepository";
 import type { GraphSource } from "../graph/graphSource";
 import { ImpactService, type ImpactDirection } from "../graph/impactService";
+import { IntelligenceService } from "../graph/intelligenceService";
 import { SearchService } from "../graph/searchService";
 import { TraversalService } from "../graph/traversalService";
 
@@ -47,6 +48,7 @@ export function createGraphRouter({ reader, sourceFor }: GraphRouteDeps): Router
   const traversal = new TraversalService(reader);
   const impact = new ImpactService(reader);
   const detail = new DetailService(reader);
+  const intelligence = new IntelligenceService(reader);
 
   router.use((req, res, next) => {
     if (!req.auth || req.auth.connectionId !== cid(req)) return res.status(404).json({ error: "Not found" });
@@ -73,8 +75,35 @@ export function createGraphRouter({ reader, sourceFor }: GraphRouteDeps): Router
     if (!object) throw new GraphNotFoundError("Object not found or not accessible");
     res.json({
       apiName: object.name,
-      fields: object.fields.map((f) => ({ name: f.name, label: f.label, type: f.type, referenceTo: f.referenceTo, masterDetail: f.masterDetail })),
+      fields: object.fields.map((f) => ({
+        name: f.name,
+        label: f.label,
+        type: f.type,
+        referenceTo: f.referenceTo,
+        masterDetail: f.masterDetail,
+        custom: f.custom ?? f.name.endsWith("__c"),
+        required: f.required ?? null,
+        cascadeDelete: f.cascadeDelete ?? null,
+        relationshipName: f.relationshipName ?? null,
+      })),
     });
+  });
+
+  router.get("/objects/:apiName/sharing", async (req, res) => {
+    const { apiName } = req.params;
+    if (!API_NAME.test(apiName)) throw new GraphInputError("apiName is not valid");
+    res.json(await (await sourceFor(cid(req))).objectSharing(apiName));
+  });
+
+  // Live record counts for the target objects of a relationship; on demand because each is a COUNT() query.
+  router.get("/record-counts", async (req, res) => {
+    const names = [...new Set((text(req, "objects") ?? "").split(",").filter(Boolean))];
+    if (names.length === 0 || names.length > 200 || names.some((n) => !API_NAME.test(n))) throw new GraphInputError("objects must be a comma-separated list of object API names");
+    res.json(await (await sourceFor(cid(req))).recordCounts(names));
+  });
+
+  router.get("/nodes/:nodeKey/intelligence", async (req, res) => {
+    res.json(await intelligence.forNode(cid(req), nodeKey(req)));
   });
 
   router.get("/nodes/:nodeKey/expand", async (req, res) => {

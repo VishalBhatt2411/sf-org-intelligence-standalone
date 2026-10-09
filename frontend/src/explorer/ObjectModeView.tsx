@@ -1,16 +1,14 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Alert, Box, Breadcrumbs, Button, CircularProgress, Link, Stack, Typography } from "@mui/material";
 import { AnchorSearch } from "./AnchorSearch";
 import { ConnectorDetailDialog } from "./ConnectorDetailDialog";
-import { NodeDetailView } from "./DetailPanel";
 import type { GraphNode, GraphSummary } from "./graphApi";
-import { OBJECT_MODE_EDGE_TYPES, type ConnectorField, type ObjectConnector, type ObjectRef } from "./objectRelationshipView";
+import { IntelligencePanel } from "./IntelligencePanel";
+import { buildObjectRelationshipView, OBJECT_MODE_EDGE_TYPES, type ConnectorField, type ObjectConnector, type ObjectRef } from "./objectRelationshipView";
 import { ReadyToMap } from "./ReadyToMap";
 import { RelationshipCanvas } from "./RelationshipCanvas";
 import { fieldsSetupUrl, objectOfField, objectSetupUrl } from "./salesforceLinks";
-import { errorMessage } from "./nodeStyle";
 import { useExplorer } from "./useExplorer";
-import { useToast } from "../toast";
 
 type ObjectModeViewProps = {
   connectionId: string;
@@ -27,12 +25,14 @@ type ObjectModeViewProps = {
 // (right). The two-hop expansion over relationship edges brings in the object, its relationship fields and
 // the objects on the far side, which is exactly what the canvas turns into connectors.
 export function ObjectModeView({ connectionId, summary, dark, instanceUrl, pendingNode, onPendingHandled }: ObjectModeViewProps) {
-  const notify = useToast();
   const options = useMemo(() => ({ hops: 2, limit: 500, edgeTypes: [...OBJECT_MODE_EDGE_TYPES] }), []);
   const ex = useExplorer(connectionId, options);
   const { api, state } = ex;
   const objectTypeKey = summary.nodesByType.find((t) => t.kind === "CustomObject")?.typeKey ?? null;
   const [connector, setConnector] = useState<{ connector: ObjectConnector; root: ObjectRef } | null>(null);
+  // Object keys the panel's impact result asked the canvas to emphasise; cleared whenever the anchor changes.
+  const [highlight, setHighlight] = useState<ReadonlySet<string> | null>(null);
+  useEffect(() => setHighlight(null), [state.rootKey]);
 
   useEffect(() => {
     if (!pendingNode) return;
@@ -47,22 +47,12 @@ export function ObjectModeView({ connectionId, summary, dark, instanceUrl, pendi
   const rootError = rootKey ? ex.errors[rootKey] : undefined;
   const rootExpansion = rootKey ? state.expansions[rootKey] : undefined;
 
-  const copy = useCallback(
-    (text: string) => {
-      navigator.clipboard.writeText(text).then(
-        () => notify("Copied"),
-        () => notify("Couldn't copy to the clipboard", "error"),
-      );
-    },
-    [notify],
-  );
-
   const openObject = instanceUrl ? (o: ObjectRef) => window.open(objectSetupUrl(instanceUrl, o.fqn), "_blank", "noopener") : undefined;
   const openField = instanceUrl ? (f: ConnectorField) => window.open(fieldsSetupUrl(instanceUrl, objectOfField(f.fieldFqn ?? "")), "_blank", "noopener") : undefined;
 
   const trail = state.trail.map((key) => ({ key, label: state.nodes[key]?.label ?? "…" }));
   const detailKey = state.selectedKey;
-  const detailExpansion = detailKey ? state.expansions[detailKey] : undefined;
+  const workingView = useMemo(() => (rootKey ? buildObjectRelationshipView(ex.graph.nodes, ex.graph.edges, rootKey) : null), [ex.graph.nodes, ex.graph.edges, rootKey]);
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
@@ -113,6 +103,7 @@ export function ObjectModeView({ connectionId, summary, dark, instanceUrl, pendi
                   }}
                   onConnectorClick={(c, root) => setConnector({ connector: c, root })}
                   onOpenInSalesforce={openObject}
+                  highlightKeys={highlight ?? undefined}
                 />
               ) : (
                 !rootError && (
@@ -124,35 +115,16 @@ export function ObjectModeView({ connectionId, summary, dark, instanceUrl, pendi
               )}
             </Box>
 
-            <Box component="aside" sx={{ flex: { md: 1 }, minWidth: { md: 288 }, maxWidth: { md: 380 }, maxHeight: { xs: "45%", md: "none" }, overflowY: "auto", borderLeft: { md: "1px solid" }, borderTop: { xs: "1px solid", md: "none" }, borderColor: "divider", bgcolor: "background.paper" }}>
-              {detailKey && (
-                <NodeDetailView
-                  key={detailKey}
-                  api={api}
-                  connectionId={connectionId}
-                  nodeKey={detailKey}
-                  allowExpand={false}
-                  expanded={false}
-                  loading={false}
-                  error={undefined}
-                  hasMore={false}
-                  truncated={Boolean(detailExpansion?.truncated)}
-                  onToggle={() => undefined}
-                  onFocus={() => {
-                    const node = state.nodes[detailKey];
-                    if (node) ex.focus(node);
-                  }}
-                  onLoadMore={() => undefined}
-                  onOpenRelated={(key) =>
-                    void api
-                      .detail(key)
-                      .then((d) => ex.focus(d.node))
-                      .catch((e) => notify(errorMessage(e), "error"))
-                  }
-                  onCopy={copy}
-                />
-              )}
-            </Box>
+            <IntelligencePanel
+              api={api}
+              connectionId={connectionId}
+              nodeKey={detailKey}
+              view={rootReady ? workingView : null}
+              workingNodes={ex.graph.nodes}
+              highlighted={highlight !== null}
+              onSelectNode={ex.select}
+              onHighlight={(keys) => setHighlight(keys ? new Set(keys) : null)}
+            />
           </>
         )}
       </Box>

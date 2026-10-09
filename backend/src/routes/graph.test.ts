@@ -16,6 +16,8 @@ const OBJ_KEY = keyOfRef(obj);
 let server: Server;
 let base: string;
 let describeCalls: string[][] = [];
+let sharingCalls: string[] = [];
+let countCalls: string[][] = [];
 let authedConnection: string | undefined = C;
 
 // Describes only Invoice__c; anything else comes back not found, like an inaccessible object.
@@ -26,6 +28,14 @@ const source: Partial<GraphSource> = {
       ? [{ name: "Invoice__c", fields: [{ name: "Amount__c", label: "Amount", type: "currency", referenceTo: [], masterDetail: false, sfId: "00N000000000001" }] }]
       : [];
     return { described, failed: [] };
+  },
+  objectSharing: async (name: string) => {
+    sharingCalls.push(name);
+    return { supported: true, internalSharingModel: "Private", externalSharingModel: null, unavailableReason: null };
+  },
+  recordCounts: async (names: string[]) => {
+    countCalls.push(names);
+    return { counts: Object.fromEntries(names.map((n) => [n, 7])), truncated: false };
   },
 } as Partial<GraphSource>;
 
@@ -155,8 +165,46 @@ describe("graph routes", () => {
     describeCalls = [];
     const { status, body } = await get("/objects/Invoice__c/fields");
     expect(status).toBe(200);
-    expect(body).toEqual({ apiName: "Invoice__c", fields: [{ name: "Amount__c", label: "Amount", type: "currency", referenceTo: [], masterDetail: false }] });
+    expect(body).toEqual({
+      apiName: "Invoice__c",
+      fields: [{ name: "Amount__c", label: "Amount", type: "currency", referenceTo: [], masterDetail: false, custom: true, required: null, cascadeDelete: null, relationshipName: null }],
+    });
     expect(describeCalls).toEqual([["Invoice__c"]]);
+  });
+
+  it("groups a node's neighbours into intelligence categories and says why a list is empty", async () => {
+    const { status, body } = await get(`/nodes/${OBJ_KEY}/intelligence`);
+    expect(status).toBe(200);
+    const code = body.categories.find((c: { category: string }) => c.category === "code");
+    expect(code.items.map((i: { label: string; direction: string }) => [i.label, i.direction])).toEqual([["Svc", "in"]]);
+    const security = body.categories.find((c: { category: string }) => c.category === "security");
+    expect(security).toMatchObject({ items: [], emptyState: "unscanned" });
+    expect(body.lastScannedAt).toBeNull();
+    expect((await get(`/nodes/${"0".repeat(64)}/intelligence`)).status).toBe(404);
+    expect((await get("/nodes/not-a-key/intelligence")).status).toBe(400);
+  });
+
+  it("reads an object's sharing settings and validates the name before calling Salesforce", async () => {
+    sharingCalls = [];
+    const ok = await get("/objects/Invoice__c/sharing");
+    expect(ok.status).toBe(200);
+    expect(ok.body).toEqual({ supported: true, internalSharingModel: "Private", externalSharingModel: null, unavailableReason: null });
+    expect((await get("/objects/a'b/sharing")).status).toBe(400);
+    expect(sharingCalls).toEqual(["Invoice__c"]);
+  });
+
+  it("returns record counts for a de-duplicated list of objects and rejects malformed input", async () => {
+    countCalls = [];
+    const ok = await get("/record-counts?objects=Invoice__c,Account,Invoice__c");
+    expect(ok.status).toBe(200);
+    expect(ok.body).toEqual({ counts: { Invoice__c: 7, Account: 7 }, truncated: false });
+    expect(countCalls).toEqual([["Invoice__c", "Account"]]);
+    countCalls = [];
+    expect((await get("/record-counts")).status).toBe(400);
+    expect((await get("/record-counts?objects=")).status).toBe(400);
+    expect((await get("/record-counts?objects=Bad%20Name")).status).toBe(400);
+    expect((await get("/record-counts?objects=a'b")).status).toBe(400);
+    expect(countCalls).toEqual([]);
   });
 
   it("answers 404 for an object that cannot be described and 400 for a malformed name, without calling Salesforce", async () => {
@@ -170,7 +218,7 @@ describe("graph routes", () => {
 
   it("treats another connection's id as not found on every route", async () => {
     const foreign = `http://127.0.0.1:${(server.address() as AddressInfo).port}/connections/other-conn/graph`;
-    for (const path of ["/search?q=sec", "/summary", `/nodes/${OBJ_KEY}`, `/nodes/${OBJ_KEY}/expand`, `/nodes/${OBJ_KEY}/impact`, "/objects/Invoice__c/fields", "/browse?typeKey=x"]) {
+    for (const path of ["/search?q=sec", "/summary", `/nodes/${OBJ_KEY}`, `/nodes/${OBJ_KEY}/expand`, `/nodes/${OBJ_KEY}/impact`, `/nodes/${OBJ_KEY}/intelligence`, "/objects/Invoice__c/fields", "/objects/Invoice__c/sharing", "/record-counts?objects=Invoice__c", "/browse?typeKey=x"]) {
       const { status, body } = await get(path, foreign);
       expect([path, status]).toEqual([path, 404]);
       expect(body).toEqual({ error: "Not found" });

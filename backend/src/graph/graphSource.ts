@@ -7,6 +7,14 @@ import type { ApprovalProcessInput, DescribedObject, EmailAlertInput, Permission
 export type GlobalObject = { name: string; custom: boolean; queryable: boolean };
 export type DescribeResult = { described: DescribedObject[]; failed: string[] };
 
+// The object's Org-Wide Default. `supported` is false when the org does not report one (or the user may
+// not read it); the reason is then shown instead of a made-up value.
+export type SharingSettings = { supported: boolean; internalSharingModel: string | null; externalSharingModel: string | null; unavailableReason: string | null };
+
+// Most objects one record-count request may cover, so a polymorphic lookup cannot fan out unbounded.
+export const RECORD_COUNT_LIMIT = 25;
+export type RecordCounts = { counts: Record<string, number | null>; truncated: boolean };
+
 export interface GraphSource {
   // The org's own namespace prefix, or null when it has none.
   orgNamespace(): Promise<string | null>;
@@ -17,6 +25,9 @@ export interface GraphSource {
   validationRules(): Promise<ValidationRuleInput[]>;
   emailAlerts(): Promise<EmailAlertInput[]>;
   approvalProcesses(): Promise<ApprovalProcessInput[]>;
+  objectSharing(name: string): Promise<SharingSettings>;
+  // Live COUNT() per object; one that cannot be counted is null, never zero.
+  recordCounts(names: string[]): Promise<RecordCounts>;
 }
 
 const DESCRIBE_CONCURRENCY = 8;
@@ -88,6 +99,10 @@ export class JsforceGraphSource implements GraphSource {
             // describe reports relationshipOrder only for master-detail relationships.
             masterDetail: f.relationshipOrder !== null && f.relationshipOrder !== undefined,
             sfId: null,
+            custom: Boolean(f.custom),
+            required: f.relationshipOrder !== null && f.relationshipOrder !== undefined ? true : f.nillable === false,
+            cascadeDelete: Boolean(f.cascadeDelete),
+            relationshipName: text(f.relationshipName),
           })),
         };
       } catch (err) {
@@ -155,6 +170,37 @@ export class JsforceGraphSource implements GraphSource {
     }>("SELECT Id, Name, DeveloperName, TableEnumOrId, State, Description, NamespacePrefix FROM ProcessDefinition WHERE Type = 'Approval'");
     return rows.map((r) => ({ sfId: r.Id, objectName: r.TableEnumOrId, name: r.DeveloperName, label: r.Name, state: text(r.State), description: text(r.Description), namespace: text(r.NamespacePrefix) }));
   }
+
+  // ponytail: EntityDefinition.InternalSharingModel / ExternalSharingModel follow the documented schema but
+  // have not been run against a live org; a failure comes back as "unavailable", never as a guessed value.
+  async objectSharing(name: string): Promise<SharingSettings> {
+    try {
+      const rows = await this.soql<{ InternalSharingModel: string | null; ExternalSharingModel: string | null }>(
+        `SELECT InternalSharingModel, ExternalSharingModel FROM EntityDefinition WHERE QualifiedApiName = '${name.replace(/[^A-Za-z0-9_]/g, "")}' LIMIT 1`
+      );
+      const row = rows[0];
+      if (!row) return { supported: false, internalSharingModel: null, externalSharingModel: null, unavailableReason: "This object does not report an Org-Wide Default." };
+      return { supported: true, internalSharingModel: text(row.InternalSharingModel), externalSharingModel: text(row.ExternalSharingModel), unavailableReason: null };
+    } catch (err) {
+      console.warn(`graph: sharing settings failed for "${name}":`, (err as Error).message);
+      return { supported: false, internalSharingModel: null, externalSharingModel: null, unavailableReason: "Sharing settings could not be read for this object." };
+    }
+  }
+
+  async recordCounts(names: string[]): Promise<RecordCounts> {
+    const wanted = names.slice(0, RECORD_COUNT_LIMIT);
+    const counts: Record<string, number | null> = {};
+    await mapPool(wanted, 5, async (name) => {
+      try {
+        const result = await this.conn.query<Record<string, unknown>>(`SELECT COUNT() FROM ${name.replace(/[^A-Za-z0-9_]/g, "")}`);
+        counts[name] = result.totalSize;
+      } catch (err) {
+        console.warn(`graph: record count failed for "${name}":`, (err as Error).message);
+        counts[name] = null;
+      }
+    });
+    return { counts, truncated: names.length > wanted.length };
+  }
 }
 
 // Test double: every method returns what it was given, and any can be made to fail.
@@ -167,6 +213,8 @@ export class FakeGraphSource implements GraphSource {
   rules: ValidationRuleInput[] = [];
   alerts: EmailAlertInput[] = [];
   processes: ApprovalProcessInput[] = [];
+  sharing: Record<string, SharingSettings> = {};
+  counts: Record<string, number> = {};
   failing = new Set<keyof GraphSource>();
   describeCalls: string[][] = [];
 
@@ -203,5 +251,14 @@ export class FakeGraphSource implements GraphSource {
   async approvalProcesses() {
     this.guard("approvalProcesses");
     return this.processes;
+  }
+  async objectSharing(name: string): Promise<SharingSettings> {
+    this.guard("objectSharing");
+    return this.sharing[name] ?? { supported: false, internalSharingModel: null, externalSharingModel: null, unavailableReason: "This object does not report an Org-Wide Default." };
+  }
+  async recordCounts(names: string[]): Promise<RecordCounts> {
+    this.guard("recordCounts");
+    const wanted = names.slice(0, RECORD_COUNT_LIMIT);
+    return { counts: Object.fromEntries(wanted.map((n) => [n, this.counts[n] ?? null])), truncated: names.length > wanted.length };
   }
 }

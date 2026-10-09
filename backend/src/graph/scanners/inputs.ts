@@ -12,6 +12,12 @@ export type DescribedField = {
   // True for master-detail relationships (describe reports a relationshipOrder only for those).
   masterDetail: boolean;
   sfId: string | null;
+  // Read live for the Intelligence Panel only; the scanners never need them, so they stay optional.
+  custom?: boolean;
+  // A relationship field the user must fill in (not nillable, or master-detail).
+  required?: boolean;
+  cascadeDelete?: boolean;
+  relationshipName?: string | null;
 };
 
 export type DescribedObject = { name: string; fields: DescribedField[] };

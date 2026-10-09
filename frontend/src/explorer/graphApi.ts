@@ -102,9 +102,60 @@ export type GraphSummary = {
 export type NodeList = { nodes: GraphNode[]; truncated: boolean };
 export type SearchResponse = NodeList & { query: string };
 
-export type ObjectFields = {
-  apiName: string;
-  fields: Array<{ name: string; label: string; type: string; referenceTo: string[]; masterDetail: boolean }>;
+export type ObjectField = {
+  name: string;
+  label: string;
+  type: string;
+  referenceTo: string[];
+  masterDetail: boolean;
+  custom: boolean;
+  // Null when the org did not say (relationship-only reads).
+  required: boolean | null;
+  cascadeDelete: boolean | null;
+  relationshipName: string | null;
+};
+
+export type ObjectFields = { apiName: string; fields: ObjectField[] };
+
+export type SharingSettings = {
+  supported: boolean;
+  internalSharingModel: string | null;
+  externalSharingModel: string | null;
+  unavailableReason: string | null;
+};
+
+export type RecordCounts = { counts: Record<string, number | null>; truncated: boolean };
+
+export type IntelligenceCategoryKey = "automation" | "code" | "security";
+export type IntelligenceStatus = "active" | "inactive" | "draft" | "obsolete";
+export type IntelligenceEmptyState = "unscanned" | "incomplete" | "stale" | "none";
+
+export type IntelligenceItem = {
+  nodeKey: string;
+  label: string;
+  typeKey: string;
+  kindLabel: string;
+  // "in": the item uses this component. "out": this component uses the item.
+  direction: "in" | "out";
+  edgeTypeKey: string;
+  status: IntelligenceStatus | null;
+};
+
+export type IntelligenceCategory = {
+  category: IntelligenceCategoryKey;
+  label: string;
+  items: IntelligenceItem[];
+  total: number;
+  truncated: boolean;
+  emptyState: IntelligenceEmptyState;
+  coverageNote: string | null;
+};
+
+export type NodeIntelligence = {
+  nodeKey: string;
+  lastScannedAt: string | null;
+  hasCoverageLimitations: boolean;
+  categories: IntelligenceCategory[];
 };
 
 export function graphApi(connectionId: string) {
@@ -131,6 +182,9 @@ export function graphApi(connectionId: string) {
       api.get<ImpactResponse>(`${node(nodeKey)}/impact`, { params: { direction, depth } }).then((r) => r.data),
     detail: (nodeKey: string) => api.get<NodeDetail>(node(nodeKey)).then((r) => r.data),
     fields: (apiName: string) => api.get<ObjectFields>(`${base}/objects/${encodeURIComponent(apiName)}/fields`).then((r) => r.data),
+    sharing: (apiName: string) => api.get<SharingSettings>(`${base}/objects/${encodeURIComponent(apiName)}/sharing`).then((r) => r.data),
+    recordCounts: (names: string[]) => api.get<RecordCounts>(`${base}/record-counts`, { params: { objects: names.join(",") } }).then((r) => r.data),
+    intelligence: (nodeKey: string) => api.get<NodeIntelligence>(`${node(nodeKey)}/intelligence`).then((r) => r.data),
   };
 }
 

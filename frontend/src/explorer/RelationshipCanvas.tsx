@@ -28,6 +28,8 @@ export type RelationshipCanvasProps = {
   onConnectorClick: (connector: ObjectConnector, root: ObjectRef) => void;
   // Absent when the connection has no instance URL to open objects against.
   onOpenInSalesforce?: (object: ObjectRef) => void;
+  // Objects to emphasise (the Intelligence Panel's "Highlight on Graph"); connectors to other objects dim.
+  highlightKeys?: ReadonlySet<string>;
 };
 
 const ZOOM_OPTIONS: Array<{ value: string; label: string }> = [
@@ -70,7 +72,7 @@ export function RelationshipCanvas(props: RelationshipCanvasProps) {
   );
 }
 
-function Inner({ nodes, edges, centerNodeKey, dark, onSelect, onExploreFromHere, onConnectorClick, onOpenInSalesforce, maximized, onToggleMaximize }: RelationshipCanvasProps & { maximized: boolean; onToggleMaximize: () => void }) {
+function Inner({ nodes, edges, centerNodeKey, dark, onSelect, onExploreFromHere, onConnectorClick, onOpenInSalesforce, highlightKeys, maximized, onToggleMaximize }: RelationshipCanvasProps & { maximized: boolean; onToggleMaximize: () => void }) {
   const t = useMemo(() => relationshipTokens(dark), [dark]);
   const view = useMemo(() => buildObjectRelationshipView(nodes, edges, centerNodeKey), [nodes, edges, centerNodeKey]);
   const [mode, setMode] = useState<VisibilityMode>("business");
@@ -164,9 +166,11 @@ function Inner({ nodes, edges, centerNodeKey, dark, onSelect, onExploreFromHere,
       const c = e.connector;
       const color = connectorColor(c, t);
       const active = selectedKey === c.connectorKey || hoveredKey === c.connectorKey;
-      const cardSelected = selectedKey === c.connectorKey;
+      const lit = highlightKeys?.has(c.counterpartObject.nodeKey) ?? false;
+      const dimmed = Boolean(highlightKeys) && !lit;
+      const cardSelected = selectedKey === c.connectorKey || lit;
       return (
-        <g key={e.rowKey} onMouseEnter={() => setHoveredKey(c.connectorKey)} onMouseLeave={() => setHoveredKey(null)}>
+        <g key={e.rowKey} opacity={dimmed ? 0.35 : 1} onMouseEnter={() => setHoveredKey(c.connectorKey)} onMouseLeave={() => setHoveredKey(null)}>
           <path
             d={e.path}
             fill="none"
