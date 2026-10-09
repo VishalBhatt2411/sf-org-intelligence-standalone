@@ -180,7 +180,8 @@ type Props = {
   workingNodes: readonly GraphNode[];
   highlighted: boolean;
   onSelectNode: (nodeKey: string) => void;
-  onHighlight: (nodeKeys: string[] | null) => void;
+  // Absent where the canvas cannot emphasise nodes (the radial Field canvas), which hides the button.
+  onHighlight?: (nodeKeys: string[] | null) => void;
 };
 
 export function IntelligencePanel(p: Props) {
@@ -503,9 +504,11 @@ function PanelBody({ api, connectionId, nodeKey, view, workingNodes, highlighted
                     </Box>
                   </Box>
                 </Box>
-                <Button size="small" variant="outlined" onClick={() => onHighlight(highlighted ? null : [nodeKey, ...impact.data!.nodes.map((n) => n.nodeKey)])} sx={{ mt: 1, ...outlineButton }}>
-                  {highlighted ? "Clear highlight" : "Highlight on Graph"}
-                </Button>
+                {onHighlight && (
+                  <Button size="small" variant="outlined" onClick={() => onHighlight(highlighted ? null : [nodeKey, ...impact.data!.nodes.map((n) => n.nodeKey)])} sx={{ mt: 1, ...outlineButton }}>
+                    {highlighted ? "Clear highlight" : "Highlight on Graph"}
+                  </Button>
+                )}
               </>
             )}
           </Box>

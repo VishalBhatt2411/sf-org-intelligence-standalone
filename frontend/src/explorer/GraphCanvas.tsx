@@ -29,7 +29,8 @@ type Props = {
   onSelect: (key: string) => void;
   onToggle: (key: string) => void;
   onFocus: (key: string) => void;
-  onImpact: (key: string, direction: ImpactDirection) => void;
+  // Absent when impact is read from the Intelligence panel instead, which hides the context-menu entries.
+  onImpact?: (key: string, direction: ImpactDirection) => void;
   onOpenCluster: (id: string) => void;
   onCopy: (text: string) => void;
   onBackgroundClick: () => void;
@@ -432,13 +433,13 @@ export function GraphCanvas(props: Props) {
             <ListItemText>Focus here</ListItemText>
           </MenuItem>
         )}
-        {menuNode?.kind === "node" && (
-          <MenuItem onClick={run(() => props.onImpact(menu!.key, "downstream"))}>
+        {menuNode?.kind === "node" && props.onImpact && (
+          <MenuItem onClick={run(() => props.onImpact!(menu!.key, "downstream"))}>
             <ListItemText>Impact: what depends on this</ListItemText>
           </MenuItem>
         )}
-        {menuNode?.kind === "node" && (
-          <MenuItem onClick={run(() => props.onImpact(menu!.key, "upstream"))}>
+        {menuNode?.kind === "node" && props.onImpact && (
+          <MenuItem onClick={run(() => props.onImpact!(menu!.key, "upstream"))}>
             <ListItemText>Impact: what this depends on</ListItemText>
           </MenuItem>
         )}
