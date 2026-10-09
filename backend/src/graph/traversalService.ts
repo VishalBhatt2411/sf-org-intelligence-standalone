@@ -27,7 +27,10 @@ export type ExpandResult = {
   truncated: boolean;
 };
 
-export type ExpandOptions = { hops?: number; cursor?: string; limit?: number; known?: string[] };
+// `edgeTypes` (edge type keys) restricts which edges the walk follows. Object mode uses it to follow only
+// the structural relationship edges, so unrelated neighbours (permission sets, flows) cannot crowd the
+// relationship fields out of a capped page.
+export type ExpandOptions = { hops?: number; cursor?: string; limit?: number; known?: string[]; edgeTypes?: string[] };
 
 type Entry = { node: StoredNode; ring: number };
 
@@ -57,6 +60,7 @@ export class TraversalService {
     const limit = clamp(options.limit ?? EXPAND_DEFAULT_PAGE, 1, EXPAND_NODE_CAP);
     const cursor = parseCursor(options.cursor, hops);
     const known = new Set(options.known ?? []);
+    const edgeTypes = options.edgeTypes?.length ? options.edgeTypes : undefined;
     if (known.size > MAX_KNOWN_CHECKSUMS) throw new GraphInputError(`known is limited to ${MAX_KNOWN_CHECKSUMS} checksums`);
 
     const [root] = await this.repo.getNodes(connectionId, [rootKey]);
@@ -73,7 +77,7 @@ export class TraversalService {
       const found = await this.repo.edgesOf(
         connectionId,
         frontier.map((n) => n.nodeKey),
-        { direction: "both", limit: RING_EDGE_CAP }
+        { direction: "both", limit: RING_EDGE_CAP, ...(edgeTypes ? { typeKeys: edgeTypes } : {}) }
       );
       if (found.length >= RING_EDGE_CAP) truncated = true;
       for (const e of found) edges.set(e.edgeKey, e);

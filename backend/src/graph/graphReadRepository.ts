@@ -39,8 +39,9 @@ export interface GraphReadRepository {
   // Active edges incident to any of the nodes (in the given direction), ordered by edgeKey, at most `limit`.
   // Retire marks an edge stale as soon as either endpoint is stale, so an active edge has active ends.
   edgesOf(connectionId: string, nodeKeys: string[], options: EdgesOfOptions): Promise<StoredEdge[]>;
-  // Case-insensitive prefix match on label or fqn, ordered by label.
-  searchNodes(connectionId: string, prefix: string, limit: number): Promise<StoredNode[]>;
+  // Case-insensitive match on label or fqn anywhere in the text, prefix matches first, then by label.
+  // `typeKey` narrows the search to one node type.
+  searchNodes(connectionId: string, text: string, limit: number, typeKey?: string): Promise<StoredNode[]>;
   browseNodes(connectionId: string, typeKey: string, limit: number): Promise<StoredNode[]>;
   countNodesByType(connectionId: string): Promise<TypeCount[]>;
   countEdgesByType(connectionId: string): Promise<TypeCount[]>;
@@ -90,16 +91,20 @@ export class PrismaGraphReadRepository implements GraphReadRepository {
     return [...byKey.values()].sort((a, b) => (a.edgeKey < b.edgeKey ? -1 : a.edgeKey > b.edgeKey ? 1 : 0)).slice(0, options.limit);
   }
 
-  // Raw SQL so the predicate is lower(col) LIKE 'prefix%', which the text_pattern_ops partial indexes
-  // from the graph migration serve; Prisma's `startsWith` + insensitive mode would not use them.
-  async searchNodes(connectionId: string, prefix: string, limit: number): Promise<StoredNode[]> {
-    const pattern = `${escapeLike(prefix.toLowerCase())}%`;
+  // Raw SQL so the match can be ranked: a label or full name that starts with the text comes before one
+  // that only contains it. A contains match cannot use the prefix indexes, but the scan is bounded to one
+  // connection's active rows and the page is capped, which keeps a lookup interactive.
+  async searchNodes(connectionId: string, text: string, limit: number, typeKey?: string): Promise<StoredNode[]> {
+    const needle = escapeLike(text.toLowerCase());
+    const prefix = `${needle}%`;
+    const contains = `%${needle}%`;
     const rows = await this.db.$queryRaw<NodeRecord[]>`
       SELECT node_key AS "nodeKey", type_key AS "typeKey", label, fqn, namespace, parent_key AS "parentKey", attributes, checksum
       FROM graph_nodes
       WHERE connection_id = ${connectionId} AND state = 'active'
-        AND (lower(label) LIKE ${pattern} OR lower(fqn) LIKE ${pattern})
-      ORDER BY label, node_key
+        AND (${typeKey ?? null}::text IS NULL OR type_key = ${typeKey ?? null})
+        AND (lower(label) LIKE ${contains} OR lower(fqn) LIKE ${contains})
+      ORDER BY (CASE WHEN lower(label) LIKE ${prefix} OR lower(fqn) LIKE ${prefix} THEN 0 ELSE 1 END), label, node_key
       LIMIT ${limit}`;
     return rows.map(toNode);
   }

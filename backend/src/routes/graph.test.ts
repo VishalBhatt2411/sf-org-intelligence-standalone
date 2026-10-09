@@ -95,6 +95,16 @@ describe("graph routes", () => {
     const two = await get(`/nodes/${OBJ_KEY}/expand?hops=2`);
     expect(two.body.nodes).toHaveLength(3);
     expect(two.body.nextCursor).toBeNull();
+    // Only REFERENCES edges exist here, so restricting to another type leaves the root alone.
+    const none = await get(`/nodes/${OBJ_KEY}/expand?edgeTypes=SalesforceMetadata.HAS_FIELD`);
+    expect(none.body.nodes).toHaveLength(1);
+  });
+
+  it("searches within one node type", async () => {
+    const all = await get("/search?q=Svc");
+    expect(all.body.nodes).toHaveLength(1);
+    const objectsOnly = await get("/search?q=Svc&typeKey=SalesforceMetadata.CustomObject");
+    expect(objectsOnly.body.nodes).toHaveLength(0);
   });
 
   it("validates expand parameters", async () => {
@@ -102,6 +112,7 @@ describe("graph routes", () => {
     expect((await get(`/nodes/${OBJ_KEY}/expand?cursor=nope`)).status).toBe(400);
     expect((await get(`/nodes/${OBJ_KEY}/expand?known=xyz`)).status).toBe(400);
     expect((await get(`/nodes/${OBJ_KEY}/expand?hops=1.5`)).status).toBe(400);
+    expect((await get(`/nodes/${OBJ_KEY}/expand?edgeTypes=a%20b`)).status).toBe(400);
   });
 
   it("accepts known checksums and returns identity only for matches", async () => {

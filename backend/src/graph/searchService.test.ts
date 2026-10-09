@@ -16,10 +16,12 @@ async function fixture(names: string[] = ["InvoiceService", "InvoiceTrigger", "A
 }
 
 describe("SearchService.search", () => {
-  it("matches a label or full-name prefix case-insensitively and orders by label", async () => {
+  it("matches case-insensitively, by label or full name", async () => {
     const { service } = await fixture();
     const result = await service.search(C, "INV");
     expect(result.nodes.map((n) => n.label)).toEqual(["Amount__c", "InvoiceService", "InvoiceTrigger", "Invoice__c", "invoice_helper"]);
+    // "ount" is only inside names, so those come back after nothing else.
+    expect((await service.search(C, "ount")).nodes.map((n) => n.label)).toEqual(["AccountHandler", "Amount__c"]);
     expect(result.truncated).toBe(false);
     expect(result.query).toBe("INV");
   });
@@ -30,10 +32,17 @@ describe("SearchService.search", () => {
     expect(result.nodes.map((n) => n.fqn)).toEqual(["Invoice__c.Amount__c"]);
   });
 
-  it("trims the query and does not match in the middle of a name", async () => {
+  it("trims the query and also finds text in the middle of a name", async () => {
     const { service } = await fixture();
     expect((await service.search(C, "  Account  ")).nodes.map((n) => n.label)).toEqual(["AccountHandler"]);
-    expect((await service.search(C, "Service")).nodes).toHaveLength(0);
+    expect((await service.search(C, "Service")).nodes.map((n) => n.label)).toEqual(["InvoiceService"]);
+  });
+
+  it("can be limited to one node type", async () => {
+    const { service } = await fixture();
+    const objects = await service.search(C, "Invoice", undefined, typeKeyOf("CustomObject"));
+    expect(objects.nodes.map((n) => n.label)).toEqual(["Invoice__c"]);
+    expect((await service.search(C, "Invoice", undefined, typeKeyOf("Flow"))).nodes).toEqual([]);
   });
 
   it("rejects a query that is too short or too long", async () => {

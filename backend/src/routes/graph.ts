@@ -15,6 +15,7 @@ export type GraphRouteDeps = {
 
 const API_NAME = /^[A-Za-z][A-Za-z0-9_]{0,79}$/;
 const CHECKSUM = /^[0-9a-f]{64}$/;
+const EDGE_TYPE_KEY = /^[A-Za-z][A-Za-z0-9_.]{0,79}$/;
 
 function text(req: Request, name: string): string | undefined {
   const value = req.query[name];
@@ -53,7 +54,7 @@ export function createGraphRouter({ reader, sourceFor }: GraphRouteDeps): Router
   });
 
   router.get("/search", async (req, res) => {
-    res.json(await search.search(cid(req), text(req, "q") ?? "", integer(req, "limit")));
+    res.json(await search.search(cid(req), text(req, "q") ?? "", integer(req, "limit"), text(req, "typeKey")));
   });
 
   router.get("/browse", async (req, res) => {
@@ -79,7 +80,9 @@ export function createGraphRouter({ reader, sourceFor }: GraphRouteDeps): Router
   router.get("/nodes/:nodeKey/expand", async (req, res) => {
     const known = (text(req, "known") ?? "").split(",").filter(Boolean);
     if (known.some((c) => !CHECKSUM.test(c))) throw new GraphInputError("known must be a comma-separated list of checksums");
-    const result = await traversal.expand(cid(req), nodeKey(req), { hops: integer(req, "hops"), cursor: text(req, "cursor"), limit: integer(req, "limit"), known });
+    const edgeTypes = (text(req, "edgeTypes") ?? "").split(",").filter(Boolean);
+    if (edgeTypes.length > 20 || edgeTypes.some((t) => !EDGE_TYPE_KEY.test(t))) throw new GraphInputError("edgeTypes must be a comma-separated list of edge type keys");
+    const result = await traversal.expand(cid(req), nodeKey(req), { hops: integer(req, "hops"), cursor: text(req, "cursor"), limit: integer(req, "limit"), known, edgeTypes });
     if (!result) throw new GraphNotFoundError("Node not found");
     res.json(result);
   });

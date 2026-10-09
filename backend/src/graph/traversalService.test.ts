@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { GraphInputError } from "./errors";
 import { edgeRow, keyOfRef, nodeKeys, nodeRow, seed, type EdgeSpec, type Ref } from "./graphTestKit";
 import { InMemoryGraphRepository } from "./inMemoryGraphRepository";
+import { typeKeyOf } from "./keys";
 import { EXPAND_NODE_CAP, MAX_HOPS, RING_EDGE_CAP, TraversalService, type RingNode } from "./traversalService";
 
 const C = "c1";
@@ -172,6 +173,26 @@ describe("TraversalService.expand", () => {
     };
     await service.expand(C, keyOfRef(["CustomObject", "Hub__c"]), { hops: 3, limit: 5 });
     expect(reads).toBe(1);
+  });
+
+  it("follows only the requested edge types, in every ring", async () => {
+    const repo = new InMemoryGraphRepository();
+    const inv: Ref = ["CustomObject", "Invoice__c"];
+    const acct: Ref = ["CustomObject", "Account"];
+    const field: Ref = ["CustomField", "Invoice__c.Account__c"];
+    await seed(repo, C, [inv, acct, field, cls("Svc")], [
+      { type: "HAS_FIELD", from: inv, to: field },
+      { type: "LOOKUP_TO", from: field, to: acct },
+      { type: "REFERENCES", from: cls("Svc"), to: inv },
+    ]);
+    const service = new TraversalService(repo);
+    const typed = (await service.expand(C, keyOfRef(inv), { hops: 2, edgeTypes: [typeKeyOf("HAS_FIELD"), typeKeyOf("LOOKUP_TO")] }))!;
+    expect(typed.nodes.map((n) => n.nodeKey).sort()).toEqual([keyOfRef(acct), keyOfRef(field), keyOfRef(inv)].sort());
+    expect(typed.edges.map((e) => e.kind).sort()).toEqual(["HAS_FIELD", "LOOKUP_TO"]);
+    const all = (await service.expand(C, keyOfRef(inv), { hops: 2 }))!;
+    expect(all.nodes.map((n) => n.nodeKey)).toContain(keyOfRef(cls("Svc")));
+    // An empty list means "no restriction", not "no edges".
+    expect((await service.expand(C, keyOfRef(inv), { edgeTypes: [] }))!.nodes.length).toBeGreaterThan(1);
   });
 
   it("attaches presentation facts and confidence to nodes and edges", async () => {

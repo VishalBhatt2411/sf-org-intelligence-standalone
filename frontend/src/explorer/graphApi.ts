@@ -112,12 +112,19 @@ export function graphApi(connectionId: string) {
   const node = (nodeKey: string) => `${base}/nodes/${encodeURIComponent(nodeKey)}`;
   return {
     summary: () => api.get<GraphSummary>(`${base}/summary`).then((r) => r.data),
-    search: (q: string, limit = 25) => api.get<SearchResponse>(`${base}/search`, { params: { q, limit } }).then((r) => r.data),
+    search: (q: string, opts: { limit?: number; typeKey?: string } = {}) =>
+      api.get<SearchResponse>(`${base}/search`, { params: { q, limit: opts.limit ?? 25, typeKey: opts.typeKey } }).then((r) => r.data),
     browse: (typeKey: string, limit = 100) => api.get<NodeList>(`${base}/browse`, { params: { typeKey, limit } }).then((r) => r.data),
-    expand: (nodeKey: string, opts: { cursor?: string | null; known?: string[]; limit?: number } = {}) =>
+    expand: (nodeKey: string, opts: { cursor?: string | null; known?: string[]; limit?: number; hops?: number; edgeTypes?: string[] } = {}) =>
       api
         .get<ExpandResponse>(`${node(nodeKey)}/expand`, {
-          params: { hops: 1, cursor: opts.cursor || undefined, known: opts.known?.length ? opts.known.join(",") : undefined, limit: opts.limit },
+          params: {
+            hops: opts.hops ?? 1,
+            cursor: opts.cursor || undefined,
+            known: opts.known?.length ? opts.known.join(",") : undefined,
+            limit: opts.limit,
+            edgeTypes: opts.edgeTypes?.length ? opts.edgeTypes.join(",") : undefined,
+          },
         })
         .then((r) => r.data),
     impact: (nodeKey: string, direction: ImpactDirection, depth: number) =>

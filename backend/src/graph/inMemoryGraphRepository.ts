@@ -159,11 +159,12 @@ export class InMemoryGraphRepository implements GraphRepository, GraphReadReposi
       .map((e) => ({ edgeKey: e.edgeKey, typeKey: e.typeKey, sourceNodeKey: e.sourceNodeKey, targetNodeKey: e.targetNodeKey, confidence: e.confidence, attributes: { ...e.attributes }, checksum: e.checksum }));
   }
 
-  async searchNodes(connectionId: string, prefix: string, limit: number): Promise<ReadNode[]> {
-    const p = prefix.toLowerCase();
+  async searchNodes(connectionId: string, text: string, limit: number, typeKey?: string): Promise<ReadNode[]> {
+    const p = text.toLowerCase();
+    const starts = (n: ReadNode) => n.label.toLowerCase().startsWith(p) || n.fqn.toLowerCase().startsWith(p);
     return this.mine(this.nodes, connectionId)
-      .filter((n) => n.label.toLowerCase().startsWith(p) || n.fqn.toLowerCase().startsWith(p))
-      .sort((a, b) => byText(a.label, b.label) || byText(a.nodeKey, b.nodeKey))
+      .filter((n) => (!typeKey || n.typeKey === typeKey) && (n.label.toLowerCase().includes(p) || n.fqn.toLowerCase().includes(p)))
+      .sort((a, b) => Number(!starts(a)) - Number(!starts(b)) || byText(a.label, b.label) || byText(a.nodeKey, b.nodeKey))
       .slice(0, limit)
       .map(this.readNode);
   }
