@@ -10,6 +10,7 @@ import { FieldModeView } from "./FieldModeView";
 import { graphApi, type GraphNode } from "./graphApi";
 import { errorMessage } from "./nodeStyle";
 import { ObjectModeView } from "./ObjectModeView";
+import { RecordModeView } from "./RecordModeView";
 
 const DARK_KEY = "orgIntel.explorer.dark";
 const readDark = (): boolean => {
@@ -20,7 +21,7 @@ const readDark = (): boolean => {
   }
 };
 
-type Lens = "object" | "field";
+type Lens = "object" | "field" | "record";
 
 type ExplorerPageProps = {
   connectionId: string;
@@ -123,16 +124,19 @@ export function ExplorerPage({ connectionId, initialNodeKey = null, onInitialNod
         <Tabs value={lens} onChange={(_, v: Lens) => setLens(v)} aria-label="Analyze" sx={{ minHeight: 40, "& .MuiTab-root": { minHeight: 40, textTransform: "none", fontWeight: 600 } }}>
           <Tab value="object" label="Object" />
           <Tab value="field" label="Field" />
-          <Tab value="record" label="Record" disabled title="Record analysis is not available in this build yet" />
+          <Tab value="record" label="Record" />
         </Tabs>
       </Box>
 
-      {/* Both lenses stay mounted so each keeps its own state when the tab changes. */}
+      {/* All lenses stay mounted so each keeps its own state when the tab changes. */}
       <Box sx={{ display: lens === "object" ? "flex" : "none", flexDirection: "column", flex: 1, minHeight: 0 }}>
         <ObjectModeView connectionId={connectionId} summary={data} dark={dark} instanceUrl={instanceUrl} pendingNode={pendingFor("object")} onPendingHandled={() => setPending(null)} />
       </Box>
       <Box sx={{ display: lens === "field" ? "flex" : "none", flexDirection: "column", flex: 1, minHeight: 0 }}>
         <FieldModeView connectionId={connectionId} summary={data} dark={dark} pendingNode={pendingFor("field")} onPendingHandled={() => setPending(null)} />
+      </Box>
+      <Box sx={{ display: lens === "record" ? "flex" : "none", flexDirection: "column", flex: 1, minHeight: 0 }}>
+        <RecordModeView connectionId={connectionId} summary={data} dark={dark} instanceUrl={instanceUrl} />
       </Box>
     </Box>
   );

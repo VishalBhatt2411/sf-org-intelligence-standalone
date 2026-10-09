@@ -8,7 +8,7 @@ import CloseFullscreen from "@mui/icons-material/CloseFullscreen";
 import Add from "@mui/icons-material/Add";
 import Remove from "@mui/icons-material/Remove";
 import type { GraphEdge, GraphNode } from "./graphApi";
-import { buildObjectRelationshipView, filterByVisibility, type ObjectConnector, type ObjectRef, type VisibilityMode } from "./objectRelationshipView";
+import { buildObjectRelationshipView, filterByVisibility, type ObjectConnector, type ObjectRef, type ObjectRelationshipView, type VisibilityMode } from "./objectRelationshipView";
 import { CARD_HEIGHT, CARD_WIDTH, MAX_ZOOM, MIN_ZOOM, SELF_CARD_HEIGHT, SELF_CARD_WIDTH, ZOOM_STEP, clamp, computeDiagram, type LaneEntry } from "./relationshipLayout";
 import { buildSvgExport } from "./relationshipExport";
 import { relationshipTokens, type RelationshipTokens } from "./relationshipTokens";
@@ -19,13 +19,18 @@ import { ObjectGlyph } from "./ObjectGlyph";
 // relationshipLayout; this component only draws it and owns view state (selection, zoom, filter, maximise).
 
 export type RelationshipCanvasProps = {
-  nodes: readonly GraphNode[];
-  edges: readonly GraphEdge[];
+  // Object mode derives its view from these; Record mode hands in a ready-made `view` instead.
+  nodes?: readonly GraphNode[];
+  edges?: readonly GraphEdge[];
+  view?: ObjectRelationshipView;
+  // "Object" (default) or "Record": selects every mode-aware label and affordance below.
+  kind?: "Object" | "Record";
   centerNodeKey: string;
   dark: boolean;
   onSelect: (nodeKey: string) => void;
   onExploreFromHere: (nodeKey: string) => void;
-  onConnectorClick: (connector: ObjectConnector, root: ObjectRef) => void;
+  // Absent in Record mode, whose connectors have no field detail to open.
+  onConnectorClick?: (connector: ObjectConnector, root: ObjectRef) => void;
   // Absent when the connection has no instance URL to open objects against.
   onOpenInSalesforce?: (object: ObjectRef) => void;
   // Objects to emphasise (the Intelligence Panel's "Highlight on Graph"); connectors to other objects dim.
@@ -41,7 +46,7 @@ const ZOOM_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "1.5", label: "150%" },
 ];
 
-const typeText = (o: { isCustom: boolean }) => (o.isCustom ? "Custom Object" : "Standard Object");
+const typeText = (o: ObjectRef, record: boolean) => (record ? `${o.secondaryKey ?? o.fqn} Record` : o.isCustom ? "Custom Object" : "Standard Object");
 
 const connectorColor = (c: ObjectConnector, t: RelationshipTokens): string => (c.direction === "self" ? t.self : c.primaryRelationshipType === "MasterDetail" ? t.masterDetail : c.direction === "incoming" ? t.incoming : t.outgoing);
 
@@ -72,10 +77,12 @@ export function RelationshipCanvas(props: RelationshipCanvasProps) {
   );
 }
 
-function Inner({ nodes, edges, centerNodeKey, dark, onSelect, onExploreFromHere, onConnectorClick, onOpenInSalesforce, highlightKeys, maximized, onToggleMaximize }: RelationshipCanvasProps & { maximized: boolean; onToggleMaximize: () => void }) {
+function Inner({ nodes, edges, view: suppliedView, kind = "Object", centerNodeKey, dark, onSelect, onExploreFromHere, onConnectorClick, onOpenInSalesforce, highlightKeys, maximized, onToggleMaximize }: RelationshipCanvasProps & { maximized: boolean; onToggleMaximize: () => void }) {
   const t = useMemo(() => relationshipTokens(dark), [dark]);
-  const view = useMemo(() => buildObjectRelationshipView(nodes, edges, centerNodeKey), [nodes, edges, centerNodeKey]);
-  const [mode, setMode] = useState<VisibilityMode>("business");
+  const record = kind === "Record";
+  const view = useMemo(() => suppliedView ?? buildObjectRelationshipView(nodes ?? [], edges ?? [], centerNodeKey), [suppliedView, nodes, edges, centerNodeKey]);
+  // Record connectors have no system classification, so Record mode shows everything and hides the toggle.
+  const [mode, setMode] = useState<VisibilityMode>(record ? "all" : "business");
   const [showAllIncoming, setShowAllIncoming] = useState(false);
   const [showAllOutgoing, setShowAllOutgoing] = useState(false);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
@@ -116,11 +123,11 @@ function Inner({ nodes, edges, centerNodeKey, dark, onSelect, onExploreFromHere,
 
   const exportSvg = () => {
     if (!root) return;
-    const blob = new Blob([buildSvgExport(diagram, root.label, typeText(root), t)], { type: "image/svg+xml" });
+    const blob = new Blob([buildSvgExport(diagram, root.label, typeText(root, record), t)], { type: "image/svg+xml" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${root.fqn}-relationships.svg`;
+    a.download = `${record ? `${root.fqn}-${root.recordId ?? root.label}` : root.fqn}-relationships.svg`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -158,7 +165,14 @@ function Inner({ nodes, edges, centerNodeKey, dark, onSelect, onExploreFromHere,
         </Box>
       );
     }
-    return <Typography sx={{ fontSize: 13, color: t.muted }}>{lane === "incoming" ? "No objects reference this object." : "This object references no other objects."}</Typography>;
+    const text = record
+      ? lane === "incoming"
+        ? "No records reference this record."
+        : "This record has no parent lookups or child records."
+      : lane === "incoming"
+        ? "No objects reference this object."
+        : "This object references no other objects.";
+    return <Typography sx={{ fontSize: 13, color: t.muted }}>{text}</Typography>;
   };
 
   const laneEntries = (entries: LaneEntry[]) =>
@@ -181,11 +195,11 @@ function Inner({ nodes, edges, centerNodeKey, dark, onSelect, onExploreFromHere,
             style={{ filter: active ? `drop-shadow(0 0 3px ${color}88)` : undefined }}
           />
           {/* Wider invisible stroke so a thin line is easy to hit. */}
-          <path d={e.path} fill="none" stroke="transparent" strokeWidth={14} style={{ cursor: "pointer" }} onClick={() => onConnectorClick(c, root)} />
+          <path d={e.path} fill="none" stroke="transparent" strokeWidth={14} style={{ cursor: onConnectorClick ? "pointer" : "default" }} onClick={() => onConnectorClick?.(c, root)} />
           <foreignObject x={e.labelX} y={e.labelY} width={240} height={28} style={{ overflow: "visible", pointerEvents: "none" }}>
             <Box
-              onClick={() => onConnectorClick(c, root)}
-              sx={{ pointerEvents: "auto", cursor: "pointer", display: "inline-block", maxWidth: 236, px: 1, py: 0.25, borderRadius: 999, fontSize: 12, fontWeight: 600, color, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", border: "1px solid", borderColor: active ? color : "transparent", bgcolor: t.surface }}
+              onClick={() => onConnectorClick?.(c, root)}
+              sx={{ pointerEvents: "auto", cursor: onConnectorClick ? "pointer" : "default", display: "inline-block", maxWidth: 236, px: 1, py: 0.25, borderRadius: 999, fontSize: 12, fontWeight: 600, color, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", border: "1px solid", borderColor: active ? color : "transparent", bgcolor: t.surface }}
             >
               {e.label}
             </Box>
@@ -195,7 +209,7 @@ function Inner({ nodes, edges, centerNodeKey, dark, onSelect, onExploreFromHere,
               role="button"
               tabIndex={0}
               aria-pressed={cardSelected}
-              aria-label={`${c.counterpartObject.label}, ${typeText(c.counterpartObject)}`}
+              aria-label={`${c.counterpartObject.label}, ${typeText(c.counterpartObject, record)}`}
               onClick={() => selectEntry(e)}
               onKeyDown={(ev) => {
                 if (ev.key === "Enter" || ev.key === " ") {
@@ -212,7 +226,7 @@ function Inner({ nodes, edges, centerNodeKey, dark, onSelect, onExploreFromHere,
                     {c.counterpartObject.label}
                   </Typography>
                   <Typography noWrap sx={{ fontSize: 11, color: t.muted }}>
-                    {typeText(c.counterpartObject)}
+                    {typeText(c.counterpartObject, record)}
                   </Typography>
                 </Box>
                 {onOpenInSalesforce && (
@@ -246,12 +260,17 @@ function Inner({ nodes, edges, centerNodeKey, dark, onSelect, onExploreFromHere,
   );
 
   const c = diagram.centerBox;
-  const legend: Array<{ label: string; color: string; width: number; dashed?: boolean }> = [
-    { label: "Lookup", color: t.outgoing, width: 1.5 },
-    { label: "Master-Detail", color: t.masterDetail, width: 3 },
-    { label: "Self Relationship", color: t.self, width: 1.5 },
-    { label: "System Relationship", color: t.muted, width: 1.5, dashed: true },
-  ];
+  const legend: Array<{ label: string; color: string; width: number; dashed?: boolean }> = record
+    ? [
+        { label: "Related Record", color: t.outgoing, width: 1.5 },
+        { label: "Self Relationship", color: t.self, width: 1.5 },
+      ]
+    : [
+        { label: "Lookup", color: t.outgoing, width: 1.5 },
+        { label: "Master-Detail", color: t.masterDetail, width: 3 },
+        { label: "Self Relationship", color: t.self, width: 1.5 },
+        { label: "System Relationship", color: t.muted, width: 1.5, dashed: true },
+      ];
   const zoomSelectValue = zoomMode === "fit" ? "fit" : ZOOM_OPTIONS.some((o) => Number(o.value) === zoom) ? String(zoom) : "custom";
 
   return (
@@ -261,26 +280,28 @@ function Inner({ nodes, edges, centerNodeKey, dark, onSelect, onExploreFromHere,
           size="small"
           label={
             <span>
-              <strong>Analyzing Object:</strong> {root.label} · {root.isCustom ? "Custom" : "Standard"}
+              <strong>{record ? "Analyzing Record:" : "Analyzing Object:"}</strong> {root.label} · {record ? (root.secondaryKey ?? root.fqn) : root.isCustom ? "Custom" : "Standard"}
             </span>
           }
           sx={{ bgcolor: t.accentWash, color: t.accent }}
         />
         <Box sx={{ flex: 1 }} />
-        <Stack direction="row" alignItems="center" spacing={1}>
-          <Typography sx={{ fontSize: 12, color: t.muted }}>Relationship View</Typography>
-          <ToggleButtonGroup size="small" exclusive value={mode} onChange={(_, v: VisibilityMode | null) => v && setMode(v)} aria-label="Relationship view">
-            <ToggleButton value="business" sx={{ textTransform: "none", px: 1.25 }}>
-              Business
-            </ToggleButton>
-            <ToggleButton value="system" sx={{ textTransform: "none", px: 1.25 }}>
-              System
-            </ToggleButton>
-            <ToggleButton value="all" sx={{ textTransform: "none", px: 1.25 }}>
-              All
-            </ToggleButton>
-          </ToggleButtonGroup>
-        </Stack>
+        {!record && (
+          <Stack direction="row" alignItems="center" spacing={1}>
+            <Typography sx={{ fontSize: 12, color: t.muted }}>Relationship View</Typography>
+            <ToggleButtonGroup size="small" exclusive value={mode} onChange={(_, v: VisibilityMode | null) => v && setMode(v)} aria-label="Relationship view">
+              <ToggleButton value="business" sx={{ textTransform: "none", px: 1.25 }}>
+                Business
+              </ToggleButton>
+              <ToggleButton value="system" sx={{ textTransform: "none", px: 1.25 }}>
+                System
+              </ToggleButton>
+              <ToggleButton value="all" sx={{ textTransform: "none", px: 1.25 }}>
+                All
+              </ToggleButton>
+            </ToggleButtonGroup>
+          </Stack>
+        )}
         <Select
           size="small"
           value={zoomSelectValue}
@@ -309,8 +330,12 @@ function Inner({ nodes, edges, centerNodeKey, dark, onSelect, onExploreFromHere,
       </Stack>
 
       <Stack direction="row" sx={{ px: 2, py: 1, bgcolor: t.surface, borderBottom: "1px solid", borderColor: t.border }}>
-        {laneTitle("OBJECTS REFERENCING THIS OBJECT", "Incoming Relationships", "Objects with a Lookup or Master-Detail field pointing to this object", "left")}
-        {laneTitle("OBJECTS THIS OBJECT REFERENCES", "Outgoing Relationships", "Fields on this object that look up or master-detail to another object", "right")}
+        {record
+          ? laneTitle("RECORDS REFERENCING THIS RECORD", "Incoming Relationships", "Records with a lookup pointing to this record, and child records related to it", "left")
+          : laneTitle("OBJECTS REFERENCING THIS OBJECT", "Incoming Relationships", "Objects with a Lookup or Master-Detail field pointing to this object", "left")}
+        {record
+          ? laneTitle("RECORDS THIS RECORD REFERENCES", "Outgoing Relationships", "Records this record looks up to, or is a child of", "right")
+          : laneTitle("OBJECTS THIS OBJECT REFERENCES", "Outgoing Relationships", "Fields on this object that look up or master-detail to another object", "right")}
       </Stack>
 
       <Box ref={wrapperRef} sx={{ position: "relative", flex: 1, minHeight: 0, overflow: "auto" }}>
@@ -345,20 +370,20 @@ function Inner({ nodes, edges, centerNodeKey, dark, onSelect, onExploreFromHere,
                 <path d={s.downPath} fill="none" stroke={t.self} strokeWidth={active ? 3.5 : 1.5} />
                 <path d={s.upPath} fill="none" stroke={t.self} strokeWidth={active ? 3.5 : 1.5} />
                 <foreignObject x={s.captionX} y={s.captionY} width={s.captionWidth} height={40}>
-                  <Typography sx={{ fontSize: 11, textAlign: "center", color: t.muted }}>This object references itself</Typography>
+                  <Typography sx={{ fontSize: 11, textAlign: "center", color: t.muted }}>{record ? `${root.secondaryKey ?? root.fqn} record related to another ${root.secondaryKey ?? root.fqn} record` : "This object references itself"}</Typography>
                 </foreignObject>
                 <foreignObject x={s.cardX} y={s.cardY} width={SELF_CARD_WIDTH} height={SELF_CARD_HEIGHT}>
                   <Box sx={{ width: SELF_CARD_WIDTH, height: SELF_CARD_HEIGHT, boxSizing: "border-box", border: `1.5px dashed ${t.self}`, borderRadius: 2, bgcolor: t.sunken, display: "flex", flexDirection: "column", justifyContent: "center", px: 1.5 }}>
                     <Typography noWrap sx={{ fontSize: 13, fontWeight: 700, color: t.text }}>
-                      {root.label} (Self)
+                      {record ? s.connector.counterpartObject.label : `${root.label} (Self)`}
                     </Typography>
                     <Typography noWrap sx={{ fontSize: 11, color: t.muted }}>
-                      {typeText(root)}
+                      {typeText(s.connector.counterpartObject, record)}
                     </Typography>
                   </Box>
                 </foreignObject>
                 <foreignObject x={s.labelX} y={s.labelY} width={s.labelWidth} height={28}>
-                  <Box onClick={() => onConnectorClick(s.connector, root)} sx={{ cursor: "pointer", textAlign: "center", fontSize: 12, fontWeight: 600, color: t.self, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  <Box onClick={() => onConnectorClick?.(s.connector, root)} sx={{ cursor: onConnectorClick ? "pointer" : "default", textAlign: "center", fontSize: 12, fontWeight: 600, color: t.self, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                     {s.label}
                   </Box>
                 </foreignObject>
@@ -370,7 +395,7 @@ function Inner({ nodes, edges, centerNodeKey, dark, onSelect, onExploreFromHere,
             <Box sx={{ width: c.width, height: c.height, boxSizing: "border-box", bgcolor: t.surface, border: `2px solid ${t.object}`, borderRadius: 2.5, boxShadow: `0 0 0 4px ${t.object}22, 0 4px 16px rgba(15,23,42,.14)`, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 0.75, px: 1.5, textAlign: "center" }}>
               <ObjectGlyph label={root.label} custom={root.isCustom} size={44} dark={dark} />
               <Typography sx={{ fontSize: 14, fontWeight: 800, letterSpacing: "0.04em", color: t.text, wordBreak: "break-word" }}>{root.label.toUpperCase()}</Typography>
-              <Typography sx={{ fontSize: 11, color: t.muted }}>{typeText(root)}</Typography>
+              <Typography sx={{ fontSize: 11, color: t.muted }}>{typeText(root, record)}</Typography>
               <Box sx={{ mt: 0.5, px: 1.25, py: 0.25, borderRadius: 999, bgcolor: `${t.object}22`, color: t.object, fontSize: 11, fontWeight: 700 }}>● Analyzing</Box>
             </Box>
           </foreignObject>

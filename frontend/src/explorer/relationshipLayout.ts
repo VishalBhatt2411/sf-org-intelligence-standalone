@@ -51,6 +51,7 @@ export const relationshipTypeLabel = (c: ObjectConnector): string => (c.primaryR
 
 // One field reads as "AccountId · Lookup"; several read as "3 Lookup Relationships" rather than a cryptic "+2".
 export function connectorLabelText(c: ObjectConnector): string {
+  if (c.labelOverride) return c.labelOverride;
   const type = relationshipTypeLabel(c);
   if (c.fields.length > 0 && c.fields[0].fieldApiName) {
     return c.relationshipCount > 1 ? `${c.relationshipCount} ${type} Relationships` : `${c.fields[0].fieldApiName} · ${type}`;

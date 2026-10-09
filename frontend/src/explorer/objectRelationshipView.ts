@@ -28,7 +28,9 @@ export const DEFAULT_VISIBLE_PER_LANE = 6;
 export type RelationshipType = "Lookup" | "MasterDetail";
 export type ConnectorDirection = "incoming" | "outgoing" | "self";
 
-export type ObjectRef = { nodeKey: string; label: string; fqn: string; isCustom: boolean };
+// secondaryKey / objectApiName / recordId are set only by Record mode, where the ref is one record: the
+// secondary key is its object's API name (the card subtitle) and the Id is what "Open in Salesforce" needs.
+export type ObjectRef = { nodeKey: string; label: string; fqn: string; isCustom: boolean; secondaryKey?: string; objectApiName?: string; recordId?: string | null };
 
 export type ConnectorField = {
   fieldNodeKey: string;
@@ -47,6 +49,8 @@ export type ObjectConnector = {
   relationshipCount: number;
   primaryRelationshipType: RelationshipType;
   isSystemRelationship: boolean;
+  // Record mode's connectors carry no field breakdown, so they state their own wording ("Related Record").
+  labelOverride?: string;
 };
 
 export type ObjectRelationshipView = {

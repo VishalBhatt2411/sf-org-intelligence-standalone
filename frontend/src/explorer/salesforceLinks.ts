@@ -11,5 +11,9 @@ export const objectSetupUrl = (instanceUrl: string, objectApiName: string): stri
 export const fieldsSetupUrl = (instanceUrl: string, objectApiName: string): string =>
   `${base(instanceUrl)}/lightning/setup/ObjectManager/${encodeURIComponent(objectApiName)}/FieldsAndRelationships/view`;
 
+// A record's own detail page.
+export const recordUrl = (instanceUrl: string, objectApiName: string, recordId: string): string =>
+  `${base(instanceUrl)}/lightning/r/${encodeURIComponent(objectApiName)}/${encodeURIComponent(recordId)}/view`;
+
 // "Account.OwnerId" -> "Account"; a bare name is returned as is.
 export const objectOfField = (fieldFqn: string): string => fieldFqn.split(".")[0];

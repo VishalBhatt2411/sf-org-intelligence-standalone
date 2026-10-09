@@ -158,6 +158,13 @@ export type NodeIntelligence = {
   categories: IntelligenceCategory[];
 };
 
+// Record mode: live reads of one object's records and one record's neighbours; never part of the stored graph.
+export type RecordSummary = { recordId: string; label: string; objectApiName: string };
+export type RecordNode = { nodeKey: string; typeKey: string; label: string; objectApiName: string; recordId: string };
+export type RecordEdge = { edgeKey: string; typeKey: string; source: string; target: string; viaField: string | null };
+export type RecordOverview = { ownerName: string | null; createdDate: string | null; lastModifiedDate: string | null };
+export type RecordFragment = { centerNodeKey: string | null; nodes: RecordNode[]; edges: RecordEdge[]; hasMore: boolean; overview: RecordOverview | null };
+
 export function graphApi(connectionId: string) {
   const base = `/connections/${connectionId}/graph`;
   const node = (nodeKey: string) => `${base}/nodes/${encodeURIComponent(nodeKey)}`;
@@ -184,6 +191,10 @@ export function graphApi(connectionId: string) {
     fields: (apiName: string) => api.get<ObjectFields>(`${base}/objects/${encodeURIComponent(apiName)}/fields`).then((r) => r.data),
     sharing: (apiName: string) => api.get<SharingSettings>(`${base}/objects/${encodeURIComponent(apiName)}/sharing`).then((r) => r.data),
     recordCounts: (names: string[]) => api.get<RecordCounts>(`${base}/record-counts`, { params: { objects: names.join(",") } }).then((r) => r.data),
+    records: (objectApiName: string, q = "") =>
+      api.get<{ records: RecordSummary[] }>(`${base}/objects/${encodeURIComponent(objectApiName)}/records`, { params: { q: q || undefined } }).then((r) => r.data.records),
+    recordFragment: (objectApiName: string, recordId: string) =>
+      api.get<RecordFragment>(`${base}/objects/${encodeURIComponent(objectApiName)}/records/${encodeURIComponent(recordId)}/fragment`).then((r) => r.data),
     intelligence: (nodeKey: string) => api.get<NodeIntelligence>(`${node(nodeKey)}/intelligence`).then((r) => r.data),
   };
 }
