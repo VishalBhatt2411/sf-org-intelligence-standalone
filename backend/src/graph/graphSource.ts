@@ -1,4 +1,5 @@
 import type { Connection } from "jsforce";
+import type { RecordApi, RecordDescribe, RecordGlobal } from "./recordHierarchy";
 import type { ApprovalProcessInput, DescribedObject, EmailAlertInput, PermissionSetMeta, ValidationRuleInput } from "./scanners/inputs";
 
 // Live Salesforce reads the graph stage needs beyond what the main scan already stored. Behind an
@@ -28,6 +29,8 @@ export interface GraphSource {
   objectSharing(name: string): Promise<SharingSettings>;
   // Live COUNT() per object; one that cannot be counted is null, never zero.
   recordCounts(names: string[]): Promise<RecordCounts>;
+  // Live record reads for Record mode; run as the connected user, so sharing and FLS apply.
+  records(): RecordApi;
 }
 
 const DESCRIBE_CONCURRENCY = 8;
@@ -201,6 +204,31 @@ export class JsforceGraphSource implements GraphSource {
     });
     return { counts, truncated: names.length > wanted.length };
   }
+
+  records(): RecordApi {
+    const conn = this.conn;
+    // describeGlobal and describe are cached per source (one request) so a record read costs each object once.
+    let global: Promise<RecordGlobal[]> | null = null;
+    const described = new Map<string, Promise<RecordDescribe>>();
+    return {
+      describeGlobal: () =>
+        (global ??= conn.describeGlobal().then((g) => g.sobjects.map((o) => ({ name: o.name, keyPrefix: text(o.keyPrefix), queryable: Boolean(o.queryable) })))),
+      describe: (name) => {
+        let hit = described.get(name);
+        if (!hit) {
+          hit = conn.describe(name).then((d) => ({
+            name: d.name,
+            queryable: Boolean(d.queryable),
+            fields: d.fields.map((f) => ({ name: f.name, type: f.type, nameField: Boolean(f.nameField), referenceTo: (f.referenceTo ?? []).filter(Boolean) as string[] })),
+            childRelationships: d.childRelationships.map((r) => ({ childSObject: r.childSObject, field: r.field, relationshipName: text(r.relationshipName) })),
+          }));
+          described.set(name, hit);
+        }
+        return hit;
+      },
+      query: async (soql) => (await conn.query<Record<string, unknown>>(soql)).records,
+    };
+  }
 }
 
 // Test double: every method returns what it was given, and any can be made to fail.
@@ -260,5 +288,14 @@ export class FakeGraphSource implements GraphSource {
     this.guard("recordCounts");
     const wanted = names.slice(0, RECORD_COUNT_LIMIT);
     return { counts: Object.fromEntries(wanted.map((n) => [n, this.counts[n] ?? null])), truncated: names.length > wanted.length };
+  }
+  recordApi: RecordApi = {
+    describeGlobal: async () => [],
+    describe: async (name) => ({ name, queryable: true, fields: [], childRelationships: [] }),
+    query: async () => [],
+  };
+  records(): RecordApi {
+    this.guard("records");
+    return this.recordApi;
   }
 }

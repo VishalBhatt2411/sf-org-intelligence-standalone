@@ -18,6 +18,7 @@ let base: string;
 let describeCalls: string[][] = [];
 let sharingCalls: string[] = [];
 let countCalls: string[][] = [];
+let recordQueries: string[] = [];
 let authedConnection: string | undefined = C;
 
 // Describes only Invoice__c; anything else comes back not found, like an inaccessible object.
@@ -37,6 +38,14 @@ const source: Partial<GraphSource> = {
     countCalls.push(names);
     return { counts: Object.fromEntries(names.map((n) => [n, 7])), truncated: false };
   },
+  records: () => ({
+    describeGlobal: async () => [{ name: "Invoice__c", keyPrefix: "a01", queryable: true }],
+    describe: async (name: string) => ({ name, queryable: true, fields: [{ name: "Name", type: "string", nameField: true, referenceTo: [] }], childRelationships: [] }),
+    query: async (soql: string) => {
+      recordQueries.push(soql);
+      return [{ Id: "a01000000000001AAA", Name: "INV-1" }];
+    },
+  }),
 } as Partial<GraphSource>;
 
 beforeAll(async () => {
@@ -207,6 +216,27 @@ describe("graph routes", () => {
     expect(countCalls).toEqual([]);
   });
 
+  it("browses and searches an object's records live, and validates before any SOQL", async () => {
+    recordQueries = [];
+    const browse = await get("/objects/Invoice__c/records");
+    expect(browse.status).toBe(200);
+    expect(browse.body.records).toEqual([{ recordId: "a01000000000001AAA", label: "INV-1", objectApiName: "Invoice__c" }]);
+    expect(recordQueries[0]).toBe("SELECT Id, Name FROM Invoice__c ORDER BY Name ASC LIMIT 20");
+    expect((await get("/objects/Invoice__c/records?q=inv")).status).toBe(200);
+    expect(recordQueries[1]).toContain("LIKE '%inv%'");
+    recordQueries = [];
+    expect((await get("/objects/Bad%20Name/records")).status).toBe(400);
+    expect((await get("/objects/Unknown__c/records")).status).toBe(404);
+    expect(recordQueries).toEqual([]);
+  });
+
+  it("returns a record's fragment and rejects a bad record Id", async () => {
+    const ok = await get("/objects/Invoice__c/records/a01000000000001AAA/fragment");
+    expect(ok.status).toBe(200);
+    expect(ok.body.centerNodeKey).toBe("Record::Invoice__c::a01000000000001AAA");
+    expect((await get("/objects/Invoice__c/records/bad-id/fragment")).status).toBe(400);
+  });
+
   it("answers 404 for an object that cannot be described and 400 for a malformed name, without calling Salesforce", async () => {
     expect((await get("/objects/Missing__c/fields")).status).toBe(404);
     describeCalls = [];
@@ -218,7 +248,7 @@ describe("graph routes", () => {
 
   it("treats another connection's id as not found on every route", async () => {
     const foreign = `http://127.0.0.1:${(server.address() as AddressInfo).port}/connections/other-conn/graph`;
-    for (const path of ["/search?q=sec", "/summary", `/nodes/${OBJ_KEY}`, `/nodes/${OBJ_KEY}/expand`, `/nodes/${OBJ_KEY}/impact`, `/nodes/${OBJ_KEY}/intelligence`, "/objects/Invoice__c/fields", "/objects/Invoice__c/sharing", "/record-counts?objects=Invoice__c", "/browse?typeKey=x"]) {
+    for (const path of ["/search?q=sec", "/summary", `/nodes/${OBJ_KEY}`, `/nodes/${OBJ_KEY}/expand`, `/nodes/${OBJ_KEY}/impact`, `/nodes/${OBJ_KEY}/intelligence`, "/objects/Invoice__c/fields", "/objects/Invoice__c/sharing", "/record-counts?objects=Invoice__c", "/objects/Invoice__c/records", "/objects/Invoice__c/records/a01000000000001AAA/fragment", "/browse?typeKey=x"]) {
       const { status, body } = await get(path, foreign);
       expect([path, status]).toEqual([path, 404]);
       expect(body).toEqual({ error: "Not found" });

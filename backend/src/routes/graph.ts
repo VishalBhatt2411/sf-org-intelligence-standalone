@@ -5,6 +5,7 @@ import type { GraphReadRepository } from "../graph/graphReadRepository";
 import type { GraphSource } from "../graph/graphSource";
 import { ImpactService, type ImpactDirection } from "../graph/impactService";
 import { IntelligenceService } from "../graph/intelligenceService";
+import { RecordInputError, RecordNotFoundError, RecordService } from "../graph/recordHierarchy";
 import { SearchService } from "../graph/searchService";
 import { TraversalService } from "../graph/traversalService";
 
@@ -102,6 +103,17 @@ export function createGraphRouter({ reader, sourceFor }: GraphRouteDeps): Router
     res.json(await (await sourceFor(cid(req))).recordCounts(names));
   });
 
+  // Record mode: live, never-persisted reads of one object's records and one record's neighbours.
+  router.get("/objects/:apiName/records", async (req, res) => {
+    const service = new RecordService((await sourceFor(cid(req))).records());
+    const term = text(req, "q") ?? "";
+    res.json({ records: term.trim() ? await service.search(req.params.apiName, term) : await service.browse(req.params.apiName) });
+  });
+
+  router.get("/objects/:apiName/records/:recordId/fragment", async (req, res) => {
+    res.json(await new RecordService((await sourceFor(cid(req))).records()).fragment(req.params.apiName, req.params.recordId));
+  });
+
   router.get("/nodes/:nodeKey/intelligence", async (req, res) => {
     res.json(await intelligence.forNode(cid(req), nodeKey(req)));
   });
@@ -130,7 +142,8 @@ export function createGraphRouter({ reader, sourceFor }: GraphRouteDeps): Router
 
   const errors: ErrorRequestHandler = (err, _req, res, next) => {
     if (err instanceof GraphInputError) return res.status(400).json({ error: err.message });
-    if (err instanceof GraphNotFoundError) return res.status(404).json({ error: err.message });
+    if (err instanceof GraphNotFoundError || err instanceof RecordNotFoundError) return res.status(404).json({ error: err.message });
+    if (err instanceof RecordInputError) return res.status(400).json({ error: err.message });
     next(err);
   };
   router.use(errors);
