@@ -5,7 +5,11 @@ import { initialViewState, isExpanded, knownChecksums, viewReducer, visibleGraph
 
 // Owns the Explorer's view state and talks to the graph read API. The server decides what is related to
 // what; this hook only asks for one hop at a time and records the answers.
-export function useExplorer(connectionId: string) {
+// Per-mode traversal shape: Object mode asks for two hops over relationship edges only; the default is the
+// server's one-hop, all-edges expansion.
+export type ExpandOptions = { hops?: number; limit?: number; edgeTypes?: string[] };
+
+export function useExplorer(connectionId: string, expandOptions: ExpandOptions = {}) {
   const api = useMemo(() => graphApi(connectionId), [connectionId]);
   const [state, dispatch] = useReducer(viewReducer, initialViewState);
   const [loading, setLoading] = useState<ReadonlySet<string>>(new Set());
@@ -14,6 +18,8 @@ export function useExplorer(connectionId: string) {
   // Handlers read the latest state through a ref so they stay stable and never act on a stale closure.
   const stateRef = useRef(state);
   stateRef.current = state;
+  const optionsRef = useRef(expandOptions);
+  optionsRef.current = expandOptions;
   // Bumped whenever the focus changes, so a slow response for the previous focus is dropped.
   const epoch = useRef(0);
   const inFlight = useRef(new Set<string>());
@@ -39,7 +45,7 @@ export function useExplorer(connectionId: string) {
       setBusy(key, true);
       setErrors(({ [key]: _cleared, ...rest }) => rest);
       try {
-        const res = await api.expand(key, { cursor, known: knownChecksums(current) });
+        const res = await api.expand(key, { cursor, known: knownChecksums(current), ...optionsRef.current });
         if (mine !== epoch.current) return;
         dispatch({ type: "expanded", owner: key, nodes: res.nodes, edges: res.edges, nextCursor: res.nextCursor, truncated: res.truncated, append: more });
       } catch (error) {

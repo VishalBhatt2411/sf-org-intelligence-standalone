@@ -43,7 +43,8 @@ type DetailProps = {
   truncated: boolean;
   onToggle: () => void;
   onFocus: () => void;
-  onImpact: (direction: ImpactDirection) => void;
+  // Absent in Object mode, whose canvas already is the dependency view.
+  onImpact?: (direction: ImpactDirection) => void;
   onLoadMore: () => void;
   onOpenRelated: (nodeKey: string) => void;
   onCopy: (text: string) => void;
@@ -116,12 +117,16 @@ export function NodeDetailView(p: DetailProps) {
         <Button size="small" variant="outlined" onClick={p.onFocus}>
           Focus here
         </Button>
-        <Button size="small" variant="outlined" onClick={() => p.onImpact("downstream")}>
-          What depends on this
-        </Button>
-        <Button size="small" variant="outlined" onClick={() => p.onImpact("upstream")}>
-          What this depends on
-        </Button>
+        {p.onImpact && (
+          <>
+            <Button size="small" variant="outlined" onClick={() => p.onImpact?.("downstream")}>
+              What depends on this
+            </Button>
+            <Button size="small" variant="outlined" onClick={() => p.onImpact?.("upstream")}>
+              What this depends on
+            </Button>
+          </>
+        )}
         <Button size="small" onClick={() => p.onCopy(node.fqn)}>
           Copy API name
         </Button>
