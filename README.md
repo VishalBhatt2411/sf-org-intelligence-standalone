@@ -68,6 +68,11 @@ Two tabs ported from the Salesforce-native Org Intelligence Platform. Design, sc
 change from the source are in `docs/PortDesign.md`. Hierarchy Manager is deferred, and the source's Tech Debt
 module is not ported because this app has its own.
 
+The Graph Explorer follows the native layout and behaviour (directional relationship canvas, Intelligence Panel,
+connector detail dialog) in this app's own theme, and has three lenses: Object, Field and Record. Record mode
+picks an object, then one of its records, and draws its parent and child records live from the org; nothing
+about the records is stored.
+
 **How it is fed.** Every scan now also builds a per-connection metadata graph (nodes and edges in Postgres, see
 the `Graph*` models and the `add_org_health` migration), then refreshes the scan-based Org Health sections.
 Neither stage can fail the scan outright: a graph failure marks the scan `completed_with_errors`, and a health

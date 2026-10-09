@@ -7,9 +7,9 @@ Source: the Salesforce-native Org Intelligence project (Apex/LWC). Target: this 
 
 ## 1. Scope
 
-In: Graph Explorer (Object / Field / Record-free first cut), search, impact analysis, Org Health.
-Out for now: Hierarchy Manager (deferred), Tech Debt (the app already has its own), Record analysis mode
-(needs live record queries; revisit after Object and Field modes ship).
+In: Graph Explorer (Object, Field and Record analyze modes, with the native layout and behaviour), search,
+impact analysis, Org Health. Record mode reads records live from the org and never stores them.
+Out for now: Hierarchy Manager (deferred), Tech Debt (the app already has its own).
 
 ## 2. What carries over and what is dropped
 
@@ -306,7 +306,8 @@ One commit per step.
 
 - Per-connection live graph (recommended) versus per-scan snapshots. Per-scan matches the existing tables but
   multiplies storage and complicates search and Org Health trends.
-- Record analysis mode: include later, or not at all in the standalone app?
+- Record analysis mode: resolved, now included (live reads only). Its SOQL has not been run against a real
+  org; record-level sharing is omitted.
 - Org Health: confirm the exposure-boost fix and the managed-orphan exclusion (section 8.3), or keep the
   source behaviour exactly.
 - Org Health access control: open to any authenticated user of the organization in v1 (section 8.5)?
