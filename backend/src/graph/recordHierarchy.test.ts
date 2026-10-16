@@ -156,6 +156,19 @@ describe("RecordService.fragment", () => {
     expect(f.edges.some((e) => e.typeKey === "SalesforceRecord.CHILD_OF")).toBe(true);
   });
 
+  it("isolates one unqueryable relationship among many without probing every relationship serially", async () => {
+    const filler = Array.from({ length: 38 }, (_, i) => ({ childSObject: `Filler${i}`, field: "AccountId", relationshipName: `Fillers${i}` }));
+    const bad = { childSObject: "Bad", field: "AccountId", relationshipName: "Bads" };
+    const wide: RecordDescribe = { ...describes.Account, childRelationships: [...filler.slice(0, 10), bad, describes.Account.childRelationships[0], ...filler.slice(10)] };
+    const wideGlobals: RecordGlobal[] = [...globals, { name: "Bad", keyPrefix: "a01", queryable: true }, ...filler.map((r, i) => ({ name: r.childSObject, keyPrefix: `b${String(i).padStart(2, "0")}`, queryable: true }))];
+    const base = fakeApi((q) => (q.includes("(SELECT Id FROM") && q.includes("Bads") ? new Error("not supported") : q.includes("FROM Bad WHERE") ? new Error("not supported") : standard(q)));
+    const api: RecordApi & { queries: string[] } = { ...base, describeGlobal: async () => wideGlobals, describe: async (n) => (n === "Account" ? wide : base.describe(n)) };
+    const f = await new RecordService(api).fragment("Account", ACCOUNT);
+    expect(f.nodes.map((n) => n.label)).toContain("Casey Contact");
+    // 40 relationships = 2 batches; isolating one bad one is a handful of queries, not 20 serial ones.
+    expect(api.queries.filter((q) => q.includes("(SELECT Id FROM") || q.includes("FROM Bad WHERE")).length).toBeLessThan(20);
+  });
+
   it("keeps the rest of the picture when a parent object cannot be read", async () => {
     const f = await new RecordService(fakeApi((q) => (q.includes("FROM User WHERE Id IN") ? new Error("no access") : standard(q)))).fragment("Account", ACCOUNT);
     expect(f.nodes.map((n) => n.label)).toContain("Acme");

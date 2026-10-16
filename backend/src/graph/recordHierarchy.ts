@@ -33,6 +33,7 @@ export const MAX_CHILDREN_PER_RELATIONSHIP = 10;
 export const MAX_RELATIONSHIP_TYPES = 200;
 export const CHILD_RELATIONSHIP_BATCH = 20;
 const DESCRIBE_CONCURRENCY = 6;
+const PROBE_CONCURRENCY = 5;
 
 const API_NAME = /^[A-Za-z][A-Za-z0-9_]{0,79}$/;
 const RECORD_ID = /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/;
@@ -195,6 +196,43 @@ export class RecordService {
     });
   }
 
+  // Returns the relationships of `batch` that have at least one child row. One relationship that is not queryable
+  // sinks the whole batched subquery, so a failed batch is split in half and each half retried: the bad
+  // relationship is isolated in about log2(n) queries (the halves run concurrently) instead of n serial ones.
+  // A single relationship that still fails falls back to a direct query on the child object, then is skipped.
+  private async probeChildren(parentName: string, recordId: string, batch: RecordChildRelationship[]): Promise<RecordChildRelationship[]> {
+    if (batch.length === 0) return [];
+    if (batch.length === 1) return this.probeOneChild(batch[0], recordId, parentName);
+    try {
+      const subqueries = batch.map((r) => `(SELECT Id FROM ${r.relationshipName} LIMIT 1)`).join(", ");
+      const rows = await this.api.query(`SELECT Id, ${subqueries} FROM ${parentName} WHERE Id = '${recordId}'`);
+      const parent = rows[0];
+      return batch.filter((r) => {
+        const child = parent?.[r.relationshipName as string] as { records?: unknown[]; totalSize?: number } | null | undefined;
+        return !!child && ((child.records?.length ?? 0) > 0 || (child.totalSize ?? 0) > 0);
+      });
+    } catch (err) {
+      console.warn(`records: batched child probe of ${batch.length} relationships failed, splitting:`, (err as Error).message.split("\n")[0]);
+      const mid = Math.ceil(batch.length / 2);
+      const halves = await Promise.all([this.probeChildren(parentName, recordId, batch.slice(0, mid)), this.probeChildren(parentName, recordId, batch.slice(mid))]);
+      return halves.flat();
+    }
+  }
+
+  private async probeOneChild(r: RecordChildRelationship, recordId: string, parentName: string): Promise<RecordChildRelationship[]> {
+    try {
+      const rows = await this.api.query(`SELECT Id, (SELECT Id FROM ${r.relationshipName} LIMIT 1) FROM ${parentName} WHERE Id = '${recordId}'`);
+      const child = rows[0]?.[r.relationshipName as string] as { records?: unknown[]; totalSize?: number } | null | undefined;
+      return child && ((child.records?.length ?? 0) > 0 || (child.totalSize ?? 0) > 0) ? [r] : [];
+    } catch {
+      try {
+        return (await this.api.query(`SELECT Id FROM ${r.childSObject} WHERE ${r.field} = '${recordId}' LIMIT 1`)).length > 0 ? [r] : [];
+      } catch {
+        return []; // unreadable relationship: skipped
+      }
+    }
+  }
+
   // Two passes keep the API cost in check: a cheap batched Id-only subquery finds which relationships have rows,
   // and only those child objects are described and read with their names.
   private async addChildren(
@@ -211,29 +249,10 @@ export class RecordService {
     const candidates = eligible.slice(0, MAX_RELATIONSHIP_TYPES);
     const fetchLimit = MAX_CHILDREN_PER_RELATIONSHIP + 1;
 
-    const populated: RecordChildRelationship[] = [];
-    for (let i = 0; i < candidates.length; i += CHILD_RELATIONSHIP_BATCH) {
-      const batch = candidates.slice(i, i + CHILD_RELATIONSHIP_BATCH);
-      const subqueries = batch.map((r) => `(SELECT Id FROM ${r.relationshipName} LIMIT 1)`).join(", ");
-      try {
-        const rows = await this.api.query(`SELECT Id, ${subqueries} FROM ${describe.name} WHERE Id = '${recordId}'`);
-        const parent = rows[0];
-        for (const r of batch) {
-          const child = parent?.[r.relationshipName as string] as { records?: unknown[]; totalSize?: number } | null | undefined;
-          if (child && ((child.records?.length ?? 0) > 0 || (child.totalSize ?? 0) > 0)) populated.push(r);
-        }
-      } catch (err) {
-        // One relationship that is not queryable here would sink its whole batch; probe that batch one by one.
-        console.warn("records: batched child probe failed, probing individually:", (err as Error).message);
-        for (const r of batch) {
-          try {
-            if ((await this.api.query(`SELECT Id FROM ${r.childSObject} WHERE ${r.field} = '${recordId}' LIMIT 1`)).length > 0) populated.push(r);
-          } catch {
-            /* unreadable relationship: skipped */
-          }
-        }
-      }
-    }
+    const batches: RecordChildRelationship[][] = [];
+    for (let i = 0; i < candidates.length; i += CHILD_RELATIONSHIP_BATCH) batches.push(candidates.slice(i, i + CHILD_RELATIONSHIP_BATCH));
+    // Batches are independent, so they run concurrently; results are flattened in batch order to keep output stable.
+    const populated = (await mapPool(batches, PROBE_CONCURRENCY, (batch) => this.probeChildren(describe.name, recordId, batch))).flat();
 
     await mapPool(populated, DESCRIBE_CONCURRENCY, async (r) => {
       try {
