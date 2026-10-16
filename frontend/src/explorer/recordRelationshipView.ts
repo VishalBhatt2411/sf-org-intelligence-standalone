@@ -7,7 +7,7 @@ import type { ObjectConnector, ObjectRef, ObjectRelationshipView } from "./objec
 // Never calls the server and never mutates its input.
 //
 // Limitation (same as native): a record connector has no field breakdown and no System/Business
-// classification, so every one reads as "Related Record" and the canvas hides the visibility toggle.
+// classification, so every one reads as "Related Record" (or "N Related Records") and the canvas hides the visibility toggle.
 
 export const RECORD_PARENT_EDGE = "SalesforceRecord.LOOKUP_TO";
 export const RECORD_CHILD_EDGE = "SalesforceRecord.CHILD_OF";
@@ -60,7 +60,7 @@ export function buildRecordRelationshipView(nodes: readonly RecordNode[], edges:
       relationshipCount: group.edgeCount,
       primaryRelationshipType: "Lookup",
       isSystemRelationship: false,
-      labelOverride: group.edgeCount > 1 ? "Related Records" : "Related Record",
+      labelOverride: group.edgeCount > 1 ? `${group.edgeCount} Related Records` : "Related Record",
     };
     (direction === "self" ? self : direction === "outgoing" ? outgoing : incoming).push(connector);
   }

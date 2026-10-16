@@ -39,7 +39,7 @@ describe("buildRecordRelationshipView", () => {
   it("merges repeated edges to one record into one plural connector", () => {
     const v = buildRecordRelationshipView([acme, pat], [parent(acme, pat, "OwnerId"), parent(acme, pat, "CreatedById")], acme.nodeKey);
     expect(v.outgoingRelationships).toHaveLength(1);
-    expect(v.outgoingRelationships[0]).toMatchObject({ relationshipCount: 2, labelOverride: "Related Records" });
+    expect(v.outgoingRelationships[0]).toMatchObject({ relationshipCount: 2, labelOverride: "2 Related Records" });
   });
 
   it("sorts connectors by label and ignores edges that miss the centre or a node", () => {

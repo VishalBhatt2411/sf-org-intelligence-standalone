@@ -133,7 +133,7 @@ export function ExplorerPage({ connectionId, initialNodeKey = null, onInitialNod
         <ObjectModeView connectionId={connectionId} summary={data} dark={dark} instanceUrl={instanceUrl} pendingNode={pendingFor("object")} onPendingHandled={() => setPending(null)} />
       </Box>
       <Box sx={{ display: lens === "field" ? "flex" : "none", flexDirection: "column", flex: 1, minHeight: 0 }}>
-        <FieldModeView connectionId={connectionId} summary={data} dark={dark} pendingNode={pendingFor("field")} onPendingHandled={() => setPending(null)} />
+        <FieldModeView connectionId={connectionId} summary={data} dark={dark} instanceUrl={instanceUrl} pendingNode={pendingFor("field")} onPendingHandled={() => setPending(null)} />
       </Box>
       <Box sx={{ display: lens === "record" ? "flex" : "none", flexDirection: "column", flex: 1, minHeight: 0 }}>
         <RecordModeView connectionId={connectionId} summary={data} dark={dark} instanceUrl={instanceUrl} />

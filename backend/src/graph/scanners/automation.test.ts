@@ -16,7 +16,7 @@ const flow = (over: Partial<FlowInput> = {}): FlowInput => ({ apiName: "F", labe
 describe("scanFlows", () => {
   it("emits the node and an exact EXECUTES_ON with the trigger type", () => {
     const out = scanFlows([flow({ sfId: "300000000000001AAA" })], index);
-    expect(out.nodes[0].attributes).toEqual({ status: "Active", triggerType: "RecordAfterSave", objectApiName: "Account" });
+    expect(out.nodes[0].attributes).toMatchObject({ status: "Active", triggerType: "RecordAfterSave", objectApiName: "Account", triggerObjectApiName: "Account", subType: "Flow", isActive: true });
     expect(out.edges).toHaveLength(1);
     expect(out.edges[0]).toMatchObject({ typeKey: "SalesforceMetadata.EXECUTES_ON", confidence: "exact", targetNodeKey: accountKey, attributes: { triggerType: "RecordAfterSave" } });
     expect(out.ids).toEqual([["300000000000001AAA", keyOf("Flow", "F")]]);
@@ -124,7 +124,11 @@ describe("object-attached rules", () => {
 
   it("skips rules on out-of-scope objects and managed-package rules unless enabled", () => {
     const rule = (objectName: string, namespace: string | null) => ({ sfId: null, objectName, name: "R", active: true, description: null, errorMessage: null, namespace });
-    expect(scanValidationRules([rule("Other__c", null)], index, scope).nodes).toEqual([]);
+    // Native keeps a rule whose object is out of scope: the node stays, with no edge and no parent.
+    const orphan = scanValidationRules([rule("Other__c", null)], index, scope);
+    expect(orphan.nodes.map((n) => n.fqn)).toEqual(["Other__c.R"]);
+    expect(orphan.nodes[0].parentKey).toBeNull();
+    expect(orphan.edges).toEqual([]);
     expect(scanValidationRules([rule("Account", "pkg")], index, scope).nodes).toEqual([]);
     expect(scanValidationRules([rule("Account", "pkg")], index, { ...scope, settings: { ...scope.settings, scanManagedPackageObjects: true } }).nodes).toHaveLength(1);
   });
@@ -133,7 +137,7 @@ describe("object-attached rules", () => {
     const wf = scanWorkflowRules([{ sfId: null, objectName: "Account", name: "W", active: true, triggerType: "onCreateOnly" }], index);
     const ea = scanEmailAlerts([{ sfId: null, objectName: "Account", name: "E", description: "d", namespace: null }], index, scope);
     const ap = scanApprovalProcesses([{ sfId: null, objectName: "01I5g000000AbCdEAK", name: "A", label: "", state: "Active", description: null, namespace: null }], index, scope);
-    const sr = scanSharingRules([{ objectName: "Account", name: "S", ruleType: "criteria", accessLevel: "Read" }], index);
+    const sr = scanSharingRules([{ objectName: "Account", name: "S", ruleType: "SharingCriteriaRule", accessLevel: "Read" }], index);
     for (const out of [wf, ea, ap, sr]) {
       expect(out.nodes).toHaveLength(1);
       expect(out.edges[0].typeKey).toBe("SalesforceMetadata.APPLIES_TO");

@@ -4,6 +4,7 @@ import { Alert, Box, Breadcrumbs, Button, CircularProgress, Link, Stack, Typogra
 import { AnchorSearch } from "./AnchorSearch";
 import { graphApi, type GraphNode, type GraphSummary, type RecordNode, type RecordSummary } from "./graphApi";
 import { errorMessage } from "./nodeStyle";
+import { RecordPanel } from "./RecordPanel";
 import { RecordPicker } from "./RecordPicker";
 import { buildRecordRelationshipView } from "./recordRelationshipView";
 import { ReadyToMap } from "./ReadyToMap";
@@ -20,8 +21,6 @@ type RecordModeViewProps = {
 
 type Anchor = { objectApiName: string; recordId: string; label: string };
 type ObjectChoice = { apiName: string; label: string };
-
-const when = (iso: string | null): string => (iso ? new Date(iso).toLocaleString() : "—");
 
 // Record analyze mode (port of native Record Analysis, ADR-0021): choose an object, then one of its records, and
 // the canvas shows that record's parents (right) and child records (left). Everything is read live from the org
@@ -62,6 +61,7 @@ export function RecordModeView({ connectionId, summary, dark, instanceUrl }: Rec
 
   const openRecord = instanceUrl ? (o: ObjectRef) => o.recordId && window.open(recordUrl(instanceUrl, o.secondaryKey ?? o.fqn, o.recordId), "_blank", "noopener") : undefined;
   const selected: RecordNode | undefined = data?.nodes.find((n) => n.nodeKey === selectedKey);
+  const canvasNodeKeys = useMemo(() => new Set((data?.nodes ?? []).map((n) => n.nodeKey)), [data]);
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
@@ -121,60 +121,16 @@ export function RecordModeView({ connectionId, summary, dark, instanceUrl }: Rec
                   <Typography color="text.secondary">Mapping {anchor.label}…</Typography>
                 </Box>
               )}
+              {data && !centerKey && (
+                <Box sx={{ flexGrow: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 0.5, textAlign: "center", p: 3 }}>
+                  <Typography sx={{ fontSize: 15, fontWeight: 700 }}>No record found</Typography>
+                  <Typography color="text.secondary" sx={{ fontSize: 13 }}>No record found for that selection.</Typography>
+                </Box>
+              )}
               {view && centerKey && <RelationshipCanvas kind="Record" view={view} centerNodeKey={centerKey} dark={dark} onSelect={setSelectedKey} onExploreFromHere={exploreFrom} onOpenInSalesforce={openRecord} />}
             </Box>
 
-            <Box
-              component="aside"
-              aria-label="Record Panel"
-              sx={{ flex: { md: 1 }, minWidth: { md: 320 }, maxWidth: { md: 420 }, maxHeight: { xs: "45%", md: "none" }, display: "flex", flexDirection: "column", overflow: "hidden", borderLeft: { md: "1px solid" }, borderTop: { xs: "1px solid", md: "none" }, borderColor: "divider", bgcolor: "background.paper" }}
-            >
-              <Box sx={{ px: 1.5, py: 1, borderBottom: "1px solid", borderColor: "divider" }}>
-                <Typography sx={{ fontSize: 11.5, fontWeight: 800, letterSpacing: "0.1em", textTransform: "uppercase" }}>Record Panel</Typography>
-              </Box>
-              <Box sx={{ flex: 1, overflowY: "auto", minHeight: 0, p: 2 }}>
-                {selected ? (
-                  <Stack spacing={1.5}>
-                    <Box>
-                      <Typography sx={{ fontSize: 15, fontWeight: 700 }}>{selected.label}</Typography>
-                      <Typography variant="caption" color="text.secondary" sx={{ fontFamily: "'JetBrains Mono', Consolas, monospace" }}>
-                        {selected.objectApiName} · {selected.recordId}
-                      </Typography>
-                    </Box>
-                    {selected.nodeKey === centerKey && data?.overview && (
-                      <Box component="table" sx={{ borderCollapse: "collapse", width: "100%" }}>
-                        <tbody>
-                          {[
-                            ["Owner", data.overview.ownerName ?? "—"],
-                            ["Created", when(data.overview.createdDate)],
-                            ["Last Modified", when(data.overview.lastModifiedDate)],
-                          ].map(([k, v]) => (
-                            <Box component="tr" key={k}>
-                              <Box component="td" sx={{ py: 0.5, fontSize: 12, color: "text.secondary", width: "40%" }}>{k}</Box>
-                              <Box component="td" sx={{ py: 0.5, fontSize: 12 }}>{v}</Box>
-                            </Box>
-                          ))}
-                        </tbody>
-                      </Box>
-                    )}
-                    <Stack direction="row" spacing={1}>
-                      {selected.nodeKey !== centerKey && (
-                        <Button size="small" variant="contained" disableElevation onClick={() => exploreFrom(selected.nodeKey)} sx={{ textTransform: "none" }}>
-                          Explore From Here
-                        </Button>
-                      )}
-                      {instanceUrl && (
-                        <Button size="small" variant="outlined" onClick={() => window.open(recordUrl(instanceUrl, selected.objectApiName, selected.recordId), "_blank", "noopener")} sx={{ textTransform: "none" }}>
-                          Open in Salesforce
-                        </Button>
-                      )}
-                    </Stack>
-                  </Stack>
-                ) : (
-                  <Typography sx={{ fontSize: 13, color: "text.secondary" }}>Select a record to see its details.</Typography>
-                )}
-              </Box>
-            </Box>
+            <RecordPanel api={api} connectionId={connectionId} node={selected ?? null} centerNodeKey={centerKey} instanceUrl={instanceUrl} onExploreFromHere={exploreFrom} onSelectNode={setSelectedKey} canvasNodeKeys={canvasNodeKeys} />
           </>
         )}
       </Box>

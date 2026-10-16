@@ -90,9 +90,9 @@ describe("isRelationshipFieldCandidate", () => {
     expect(isRelationshipFieldCandidate({ name: "X__c", type: "reference", referenceTo: null })).toBe(false);
   });
 
-  it("rejects system relationship fields", () => {
+  it("keeps system relationship fields, as the native scanner does", () => {
     for (const name of ["CreatedById", "LastModifiedById", "OwnerId"]) {
-      expect(isRelationshipFieldCandidate({ name, type: "reference", referenceTo: ["User"] })).toBe(false);
+      expect(isRelationshipFieldCandidate({ name, type: "reference", referenceTo: ["User"] })).toBe(true);
     }
   });
 });

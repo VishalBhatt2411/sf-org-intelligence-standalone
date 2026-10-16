@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Button, Chip, IconButton, MenuItem, Select, Stack, ThemeProvider, ToggleButton, ToggleButtonGroup, Tooltip, Typography, createTheme, useTheme } from "@mui/material";
 import InfoOutlined from "@mui/icons-material/InfoOutlined";
 import FitScreen from "@mui/icons-material/FitScreen";
@@ -13,6 +13,7 @@ import { CARD_HEIGHT, CARD_WIDTH, MAX_ZOOM, MIN_ZOOM, SELF_CARD_HEIGHT, SELF_CAR
 import { buildSvgExport } from "./relationshipExport";
 import { relationshipTokens, type RelationshipTokens } from "./relationshipTokens";
 import { ObjectGlyph } from "./ObjectGlyph";
+import { activateKey, ARROW_MARKER_ID, ARROW_PATH, cardAriaLabel, exportFilename, laneEmptyState, selfCaption } from "./canvasText";
 
 // Object analyze mode's directional canvas (port of native oiRelationshipCanvas): objects that reference the
 // centre on the left, objects it references on the right, self-relationships below. All geometry comes from
@@ -35,6 +36,10 @@ export type RelationshipCanvasProps = {
   onOpenInSalesforce?: (object: ObjectRef) => void;
   // Objects to emphasise (the Intelligence Panel's "Highlight on Graph"); connectors to other objects dim.
   highlightKeys?: ReadonlySet<string>;
+  // The connector whose detail dialog is open; it stays emphasised until the dialog closes.
+  activeConnectorKey?: string | null;
+  // Reports the Business / System / All filter, so the Intelligence Panel can follow it.
+  onModeChange?: (mode: VisibilityMode) => void;
 };
 
 const ZOOM_OPTIONS: Array<{ value: string; label: string }> = [
@@ -77,7 +82,7 @@ export function RelationshipCanvas(props: RelationshipCanvasProps) {
   );
 }
 
-function Inner({ nodes, edges, view: suppliedView, kind = "Object", centerNodeKey, dark, onSelect, onExploreFromHere, onConnectorClick, onOpenInSalesforce, highlightKeys, maximized, onToggleMaximize }: RelationshipCanvasProps & { maximized: boolean; onToggleMaximize: () => void }) {
+function Inner({ nodes, edges, view: suppliedView, kind = "Object", centerNodeKey, dark, onSelect, onExploreFromHere, onConnectorClick, onOpenInSalesforce, highlightKeys, activeConnectorKey, onModeChange, maximized, onToggleMaximize }: RelationshipCanvasProps & { maximized: boolean; onToggleMaximize: () => void }) {
   const t = useMemo(() => relationshipTokens(dark), [dark]);
   const record = kind === "Record";
   const view = useMemo(() => suppliedView ?? buildObjectRelationshipView(nodes ?? [], edges ?? [], centerNodeKey), [suppliedView, nodes, edges, centerNodeKey]);
@@ -87,8 +92,10 @@ function Inner({ nodes, edges, view: suppliedView, kind = "Object", centerNodeKe
   const [showAllOutgoing, setShowAllOutgoing] = useState(false);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [hoveredKey, setHoveredKey] = useState<string | null>(null);
+  // Native opens at 100%; "Fit to Screen" is an explicit choice.
   const [zoom, setZoom] = useState(1);
-  const [zoomMode, setZoomMode] = useState("fit");
+  const [zoomMode, setZoomMode] = useState("custom");
+  useEffect(() => onModeChange?.(mode), [mode, onModeChange]);
   const wrapperRef = useRef<HTMLDivElement>(null);
 
   const incoming = useMemo(() => filterByVisibility(view.incomingRelationships, mode), [view, mode]);
@@ -105,11 +112,6 @@ function Inner({ nodes, edges, view: suppliedView, kind = "Object", centerNodeKe
     setZoomMode("fit");
   }, [diagram.canvasWidth, diagram.canvasHeight]);
 
-  // First paint fits the diagram to the pane; after that zoom is the user's until they ask to fit again.
-  useLayoutEffect(() => {
-    fit();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
   // Maximise changes the pane size, so a fitted view re-fits.
   useEffect(() => {
     if (zoomMode === "fit") fit();
@@ -127,7 +129,7 @@ function Inner({ nodes, edges, view: suppliedView, kind = "Object", centerNodeKe
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${record ? `${root.fqn}-${root.recordId ?? root.label}` : root.fqn}-relationships.svg`;
+    a.download = exportFilename(root, record);
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -154,32 +156,25 @@ function Inner({ nodes, edges, view: suppliedView, kind = "Object", centerNodeKe
   );
 
   const emptyMessage = (lane: "incoming" | "outgoing") => {
-    const hiddenByFilter = mode === "business" && (lane === "incoming" ? view.incomingRelationships : view.outgoingRelationships).length > 0;
-    if (hiddenByFilter) {
+    const empty = laneEmptyState({ lane, mode, totalInLane: (lane === "incoming" ? view.incomingRelationships : view.outgoingRelationships).length, rootLabel: root.label, record });
+    if (empty.kind === "filtered") {
       return (
         <Box>
-          <Typography sx={{ fontSize: 13, color: t.good, fontWeight: 600 }}>✓ No business relationships {lane === "outgoing" ? `from ${root.label}` : `to ${root.label}`}.</Typography>
-          <Button size="small" onClick={() => setMode("all")} sx={{ mt: 0.5, textTransform: "none", px: 0 }}>
-            Show system relationships
+          <Typography sx={{ fontSize: 13, color: t.good, fontWeight: 600 }}>✓ {empty.text}</Typography>
+          <Button size="small" onClick={() => setMode(empty.showMode)} sx={{ mt: 0.5, textTransform: "none", px: 0 }}>
+            {empty.showLabel}
           </Button>
         </Box>
       );
     }
-    const text = record
-      ? lane === "incoming"
-        ? "No records reference this record."
-        : "This record has no parent lookups or child records."
-      : lane === "incoming"
-        ? "No objects reference this object."
-        : "This object references no other objects.";
-    return <Typography sx={{ fontSize: 13, color: t.muted }}>{text}</Typography>;
+    return <Typography sx={{ fontSize: 13, color: t.muted }}>{empty.text}</Typography>;
   };
 
   const laneEntries = (entries: LaneEntry[]) =>
     entries.map((e) => {
       const c = e.connector;
       const color = connectorColor(c, t);
-      const active = selectedKey === c.connectorKey || hoveredKey === c.connectorKey;
+      const active = selectedKey === c.connectorKey || hoveredKey === c.connectorKey || activeConnectorKey === c.connectorKey;
       const lit = highlightKeys?.has(c.counterpartObject.nodeKey) ?? false;
       const dimmed = Boolean(highlightKeys) && !lit;
       const cardSelected = selectedKey === c.connectorKey || lit;
@@ -192,14 +187,24 @@ function Inner({ nodes, edges, view: suppliedView, kind = "Object", centerNodeKe
             strokeWidth={active ? 3.5 : c.primaryRelationshipType === "MasterDetail" ? 3 : 1.5}
             strokeDasharray={c.isSystemRelationship ? "5 4" : undefined}
             strokeLinecap="round"
+            markerEnd={`url(#${ARROW_MARKER_ID})`}
             style={{ filter: active ? `drop-shadow(0 0 3px ${color}88)` : undefined }}
           />
           {/* Wider invisible stroke so a thin line is easy to hit. */}
           <path d={e.path} fill="none" stroke="transparent" strokeWidth={14} style={{ cursor: onConnectorClick ? "pointer" : "default" }} onClick={() => onConnectorClick?.(c, root)} />
           <foreignObject x={e.labelX} y={e.labelY} width={240} height={28} style={{ overflow: "visible", pointerEvents: "none" }}>
             <Box
+              role={onConnectorClick ? "button" : undefined}
+              tabIndex={onConnectorClick ? 0 : undefined}
+              aria-label={onConnectorClick ? `${e.label}, show relationship details` : undefined}
               onClick={() => onConnectorClick?.(c, root)}
-              sx={{ pointerEvents: "auto", cursor: onConnectorClick ? "pointer" : "default", display: "inline-block", maxWidth: 236, px: 1, py: 0.25, borderRadius: 999, fontSize: 12, fontWeight: 600, color, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", border: "1px solid", borderColor: active ? color : "transparent", bgcolor: t.surface }}
+              onKeyDown={(ev) => {
+                if (onConnectorClick && activateKey(ev.key)) {
+                  ev.preventDefault();
+                  onConnectorClick(c, root);
+                }
+              }}
+              sx={{ "&:focus-visible": { outline: `2px solid ${t.accent}` }, pointerEvents: "auto", cursor: onConnectorClick ? "pointer" : "default", display: "inline-block", maxWidth: 236, px: 1, py: 0.25, borderRadius: 999, fontSize: 12, fontWeight: 600, color, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", border: "1px solid", borderColor: active ? color : "transparent", bgcolor: t.surface }}
             >
               {e.label}
             </Box>
@@ -209,7 +214,7 @@ function Inner({ nodes, edges, view: suppliedView, kind = "Object", centerNodeKe
               role="button"
               tabIndex={0}
               aria-pressed={cardSelected}
-              aria-label={`${c.counterpartObject.label}, ${typeText(c.counterpartObject, record)}`}
+              aria-label={cardAriaLabel(c, typeText(c.counterpartObject, record))}
               onClick={() => selectEntry(e)}
               onKeyDown={(ev) => {
                 if (ev.key === "Enter" || ev.key === " ") {
@@ -232,13 +237,22 @@ function Inner({ nodes, edges, view: suppliedView, kind = "Object", centerNodeKe
                 {onOpenInSalesforce && (
                   <Box
                     component="span"
-                    role="link"
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Open ${c.counterpartObject.label} in Salesforce`}
                     title="Open in Salesforce"
                     onClick={(ev) => {
                       ev.stopPropagation();
                       onOpenInSalesforce(c.counterpartObject);
                     }}
-                    sx={{ fontSize: 11, color: t.accent, whiteSpace: "nowrap", "&:hover": { textDecoration: "underline" } }}
+                    onKeyDown={(ev) => {
+                      if (activateKey(ev.key)) {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        onOpenInSalesforce(c.counterpartObject);
+                      }
+                    }}
+                    sx={{ fontSize: 11, color: t.accent, whiteSpace: "nowrap", "&:hover": { textDecoration: "underline" }, "&:focus-visible": { outline: `2px solid ${t.accent}` } }}
                   >
                     ↗ Open
                   </Box>
@@ -348,6 +362,11 @@ function Inner({ nodes, edges, view: suppliedView, kind = "Object", centerNodeKe
           {maximized ? <CloseFullscreen fontSize="small" /> : <OpenInFull fontSize="small" />}
         </IconButton>
         <svg width={diagram.canvasWidth * zoom} height={diagram.canvasHeight * zoom} viewBox={`0 0 ${diagram.canvasWidth} ${diagram.canvasHeight}`} role="group" aria-label={`Relationships of ${root.label}`} style={{ display: "block", margin: "0 auto" }}>
+          <defs>
+            <marker id={ARROW_MARKER_ID} viewBox="0 0 8 8" markerWidth={8} markerHeight={8} refX={8} refY={4} orient="auto" markerUnits="userSpaceOnUse">
+              <path d={ARROW_PATH} fill="context-stroke" />
+            </marker>
+          </defs>
           {laneEntries(diagram.incoming)}
           {laneEntries(diagram.outgoing)}
           {incoming.length === 0 && (
@@ -364,13 +383,13 @@ function Inner({ nodes, edges, view: suppliedView, kind = "Object", centerNodeKe
           {diagram.outgoingShowMore && showMoreTile(diagram.outgoingShowMore, () => setShowAllOutgoing(true))}
 
           {diagram.self.map((s) => {
-            const active = selectedKey === s.connector.connectorKey || hoveredKey === s.connector.connectorKey;
+            const active = selectedKey === s.connector.connectorKey || hoveredKey === s.connector.connectorKey || activeConnectorKey === s.connector.connectorKey;
             return (
               <g key={s.rowKey} onMouseEnter={() => setHoveredKey(s.connector.connectorKey)} onMouseLeave={() => setHoveredKey(null)}>
                 <path d={s.downPath} fill="none" stroke={t.self} strokeWidth={active ? 3.5 : 1.5} />
                 <path d={s.upPath} fill="none" stroke={t.self} strokeWidth={active ? 3.5 : 1.5} />
                 <foreignObject x={s.captionX} y={s.captionY} width={s.captionWidth} height={40}>
-                  <Typography sx={{ fontSize: 11, textAlign: "center", color: t.muted }}>{record ? `${root.secondaryKey ?? root.fqn} record related to another ${root.secondaryKey ?? root.fqn} record` : "This object references itself"}</Typography>
+                  <Typography sx={{ fontSize: 11, textAlign: "center", color: t.muted, whiteSpace: "pre-line" }}>{selfCaption(root, record)}</Typography>
                 </foreignObject>
                 <foreignObject x={s.cardX} y={s.cardY} width={SELF_CARD_WIDTH} height={SELF_CARD_HEIGHT}>
                   <Box sx={{ width: SELF_CARD_WIDTH, height: SELF_CARD_HEIGHT, boxSizing: "border-box", border: `1.5px dashed ${t.self}`, borderRadius: 2, bgcolor: t.sunken, display: "flex", flexDirection: "column", justifyContent: "center", px: 1.5 }}>
@@ -383,7 +402,18 @@ function Inner({ nodes, edges, view: suppliedView, kind = "Object", centerNodeKe
                   </Box>
                 </foreignObject>
                 <foreignObject x={s.labelX} y={s.labelY} width={s.labelWidth} height={28}>
-                  <Box onClick={() => onConnectorClick?.(s.connector, root)} sx={{ cursor: onConnectorClick ? "pointer" : "default", textAlign: "center", fontSize: 12, fontWeight: 600, color: t.self, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  <Box
+                    role={onConnectorClick ? "button" : undefined}
+                    tabIndex={onConnectorClick ? 0 : undefined}
+                    aria-label={onConnectorClick ? `${s.label}, show relationship details` : undefined}
+                    onClick={() => onConnectorClick?.(s.connector, root)}
+                    onKeyDown={(ev) => {
+                      if (onConnectorClick && activateKey(ev.key)) {
+                        ev.preventDefault();
+                        onConnectorClick(s.connector, root);
+                      }
+                    }}
+                    sx={{ "&:focus-visible": { outline: `2px solid ${t.accent}` }, cursor: onConnectorClick ? "pointer" : "default", textAlign: "center", fontSize: 12, fontWeight: 600, color: t.self, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                     {s.label}
                   </Box>
                 </foreignObject>

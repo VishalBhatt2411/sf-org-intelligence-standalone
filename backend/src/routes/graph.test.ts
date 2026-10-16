@@ -20,13 +20,14 @@ let sharingCalls: string[] = [];
 let countCalls: string[][] = [];
 let recordQueries: string[] = [];
 let authedConnection: string | undefined = C;
+let sessionExpired = false;
 
 // Describes only Invoice__c; anything else comes back not found, like an inaccessible object.
 const source: Partial<GraphSource> = {
   describe: async (names: string[]) => {
     describeCalls.push(names);
     const described = names.includes("Invoice__c")
-      ? [{ name: "Invoice__c", fields: [{ name: "Amount__c", label: "Amount", type: "currency", referenceTo: [], masterDetail: false, sfId: "00N000000000001" }] }]
+      ? [{ name: "Invoice__c", fields: [{ nodeKey: null, name: "Amount__c", label: "Amount", type: "currency", referenceTo: null, masterDetail: false, sfId: "00N000000000001" }] }]
       : [];
     return { described, failed: [] };
   },
@@ -35,6 +36,7 @@ const source: Partial<GraphSource> = {
     return { supported: true, internalSharingModel: "Private", externalSharingModel: null, unavailableReason: null };
   },
   recordCounts: async (names: string[]) => {
+    if (sessionExpired) throw new Error("Unable to refresh session due to: expired access/refresh token");
     countCalls.push(names);
     return { counts: Object.fromEntries(names.map((n) => [n, 7])), truncated: false };
   },
@@ -164,6 +166,24 @@ describe("graph routes", () => {
     expect(body.edgeTotal).toBe(1);
   });
 
+  it("pages a node's connections of one edge type and validates the selection", async () => {
+    const { status, body } = await get(`/nodes/${OBJ_KEY}/connections?direction=incoming&edgeTypeKey=SalesforceMetadata.REFERENCES`);
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ totalCount: 1, hasMore: false, isFiltered: false, unavailableReason: null });
+    expect(body.rows[0]).toMatchObject({ label: "Svc", typeLabel: "Apex Class", roleLabel: "References" });
+    expect((await get(`/nodes/${OBJ_KEY}/connections?direction=incoming&edgeTypeKey=SalesforceMetadata.REFERENCES&q=zz`)).body).toMatchObject({ totalCount: 0, isFiltered: true });
+    expect((await get(`/nodes/${OBJ_KEY}/connections?direction=sideways&edgeTypeKey=SalesforceMetadata.REFERENCES`)).status).toBe(400);
+    expect((await get(`/nodes/${OBJ_KEY}/connections?direction=incoming`)).status).toBe(400);
+    expect((await get(`/nodes/${OBJ_KEY}/connections?direction=incoming&edgeTypeKey=SalesforceMetadata.REFERENCES&cursor=nope`)).status).toBe(400);
+  });
+
+  it("lists an object relationship fields from the scanned graph", async () => {
+    const { status, body } = await get(`/nodes/${OBJ_KEY}/relationship-fields`);
+    expect(status).toBe(200);
+    expect(body).toEqual({ fields: [] });
+    expect((await get(`/nodes/${"0".repeat(64)}/relationship-fields`)).status).toBe(404);
+  });
+
   it("returns a summary", async () => {
     const { status, body } = await get("/summary");
     expect(status).toBe(200);
@@ -176,7 +196,7 @@ describe("graph routes", () => {
     expect(status).toBe(200);
     expect(body).toEqual({
       apiName: "Invoice__c",
-      fields: [{ name: "Amount__c", label: "Amount", type: "currency", referenceTo: [], masterDetail: false, custom: true, required: null, cascadeDelete: null, relationshipName: null }],
+      fields: [{ nodeKey: null, name: "Amount__c", label: "Amount", type: "currency", referenceTo: [], masterDetail: false, custom: true, required: null, cascadeDelete: null, relationshipName: null }],
     });
     expect(describeCalls).toEqual([["Invoice__c"]]);
   });
@@ -228,6 +248,18 @@ describe("graph routes", () => {
     expect((await get("/objects/Bad%20Name/records")).status).toBe(400);
     expect((await get("/objects/Unknown__c/records")).status).toBe(404);
     expect(recordQueries).toEqual([]);
+  });
+
+  it("says the Salesforce session has expired (424) instead of a bare 500, and only for that failure", async () => {
+    sessionExpired = true;
+    try {
+      const expired = await get("/record-counts?objects=Invoice__c");
+      expect(expired.status).toBe(424);
+      expect(expired.body.error).toMatch(/Disconnect and connect the org again/);
+    } finally {
+      sessionExpired = false;
+    }
+    expect((await get("/record-counts?objects=Invoice__c")).status).toBe(200);
   });
 
   it("returns a record's fragment and rejects a bad record Id", async () => {

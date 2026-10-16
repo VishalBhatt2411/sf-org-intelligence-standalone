@@ -110,7 +110,7 @@ describe("scanApexTriggers", () => {
     const out = scanApexTriggers([trig("T", "Account", "trigger T on Account (before insert) { Handler.run(); }")], classes, index);
     const executes = out.edges.find((e) => e.typeKey.endsWith("EXECUTES_ON"))!;
     expect(executes).toMatchObject({ confidence: "parsed", targetNodeKey: keyOf("CustomObject", "Account"), attributes: { triggerEvents: ["before insert"] } });
-    expect(out.nodes[0].attributes).toEqual({ objectApiName: "Account", triggerEvents: ["before insert"] });
+    expect(out.nodes[0].attributes).toMatchObject({ objectApiName: "Account", triggerEvents: ["before insert"] });
     expect(out.edges.filter((e) => e.typeKey.endsWith("REFERENCES"))).toHaveLength(1);
   });
 

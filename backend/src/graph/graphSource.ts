@@ -1,11 +1,23 @@
 import type { Connection } from "jsforce";
 import type { RecordApi, RecordDescribe, RecordGlobal } from "./recordHierarchy";
-import type { ApprovalProcessInput, DescribedObject, EmailAlertInput, PermissionSetMeta, ValidationRuleInput } from "./scanners/inputs";
+import type { ApprovalProcessInput, DescribedObject, EmailAlertInput, FlowDefinitionMeta, PermissionSetMeta, ValidationRuleDetails, ValidationRuleInput } from "./scanners/inputs";
 
 // Live Salesforce reads the graph stage needs beyond what the main scan already stored. Behind an
 // interface so the stage is tested with a fake and the scanners never see jsforce.
 
-export type GlobalObject = { name: string; custom: boolean; queryable: boolean };
+export type GlobalObject = {
+  name: string;
+  custom: boolean;
+  queryable: boolean;
+  // describeGlobal attributes the native object node carries.
+  label?: string | null;
+  pluralLabel?: string | null;
+  keyPrefix?: string | null;
+  createable?: boolean;
+  updateable?: boolean;
+  deletable?: boolean;
+  feedEnabled?: boolean;
+};
 export type DescribeResult = { described: DescribedObject[]; failed: string[] };
 
 // The object's Org-Wide Default. `supported` is false when the org does not report one (or the user may
@@ -13,7 +25,7 @@ export type DescribeResult = { described: DescribedObject[]; failed: string[] };
 export type SharingSettings = { supported: boolean; internalSharingModel: string | null; externalSharingModel: string | null; unavailableReason: string | null };
 
 // Most objects one record-count request may cover, so a polymorphic lookup cannot fan out unbounded.
-export const RECORD_COUNT_LIMIT = 25;
+export const RECORD_COUNT_LIMIT = 50;
 export type RecordCounts = { counts: Record<string, number | null>; truncated: boolean };
 
 export interface GraphSource {
@@ -25,6 +37,10 @@ export interface GraphSource {
   permissionSetMeta(): Promise<PermissionSetMeta[]>;
   validationRules(): Promise<ValidationRuleInput[]>;
   emailAlerts(): Promise<EmailAlertInput[]>;
+  // FlowDefinitionView rows (native OI_FlowScanner's source). Optional read: callers tolerate a failure.
+  flowDefinitions(): Promise<FlowDefinitionMeta[]>;
+  // Metadata API ValidationRule details keyed by "Object.Rule". Optional read: callers tolerate a failure.
+  validationRuleDetails(fullNames: string[]): Promise<Map<string, ValidationRuleDetails>>;
   approvalProcesses(): Promise<ApprovalProcessInput[]>;
   objectSharing(name: string): Promise<SharingSettings>;
   // Live COUNT() per object; one that cannot be counted is null, never zero.
@@ -52,7 +68,7 @@ type Page<T> = { records: T[]; done?: boolean; nextRecordsUrl?: string };
 
 // Follows nextRecordsUrl until the result is exhausted. A queryMore failure mid-way throws, so the
 // caller records the stage as failed instead of treating a truncated list as the whole org.
-async function queryAll<T>(first: Page<T>, more: (locator: string) => Promise<Page<T>>): Promise<T[]> {
+export async function queryAll<T>(first: Page<T>, more: (locator: string) => Promise<Page<T>>): Promise<T[]> {
   const records = [...first.records];
   let page = first;
   while (!page.done && page.nextRecordsUrl) {
@@ -84,7 +100,18 @@ export class JsforceGraphSource implements GraphSource {
 
   async listObjects(): Promise<GlobalObject[]> {
     const global = await this.conn.describeGlobal();
-    return global.sobjects.map((o) => ({ name: o.name, custom: Boolean(o.custom), queryable: Boolean(o.queryable) }));
+    return global.sobjects.map((o) => ({
+      name: o.name,
+      custom: Boolean(o.custom),
+      queryable: Boolean(o.queryable),
+      label: text(o.label),
+      pluralLabel: text(o.labelPlural),
+      keyPrefix: text(o.keyPrefix),
+      createable: Boolean(o.createable),
+      updateable: Boolean(o.updateable),
+      deletable: Boolean(o.deletable),
+      feedEnabled: Boolean((o as { feedEnabled?: boolean }).feedEnabled),
+    }));
   }
 
   async describe(names: string[]): Promise<DescribeResult> {
@@ -106,6 +133,17 @@ export class JsforceGraphSource implements GraphSource {
             required: f.relationshipOrder !== null && f.relationshipOrder !== undefined ? true : f.nillable === false,
             cascadeDelete: Boolean(f.cascadeDelete),
             relationshipName: text(f.relationshipName),
+            details: {
+              length: typeof f.length === "number" ? f.length : null,
+              precision: typeof f.precision === "number" ? f.precision : null,
+              scale: typeof f.scale === "number" ? f.scale : null,
+              nillable: Boolean(f.nillable),
+              unique: Boolean(f.unique),
+              externalId: Boolean(f.externalId),
+              calculated: Boolean(f.calculated),
+              createable: Boolean(f.createable),
+              updateable: Boolean(f.updateable),
+            },
           })),
         };
       } catch (err) {
@@ -118,10 +156,24 @@ export class JsforceGraphSource implements GraphSource {
   }
 
   async permissionSetMeta(): Promise<PermissionSetMeta[]> {
-    const rows = await this.soql<{ Name: string; Label: string | null; IsCustom: boolean; Type: string | null; NamespacePrefix: string | null }>(
-      "SELECT Name, Label, IsCustom, Type, NamespacePrefix FROM PermissionSet"
-    );
-    return rows.map((r) => ({ name: r.Name, label: text(r.Label), isCustom: Boolean(r.IsCustom), type: text(r.Type), namespace: text(r.NamespacePrefix) }));
+    type Row = { Name: string; Label: string | null; IsCustom: boolean; Type: string | null; NamespacePrefix: string | null; Description?: string | null; IsOwnedByProfile?: boolean; License?: { Name: string | null } | null };
+    let rows: Row[];
+    try {
+      rows = await this.soql<Row>("SELECT Name, Label, IsCustom, Type, NamespacePrefix, Description, License.Name, IsOwnedByProfile FROM PermissionSet");
+    } catch (err) {
+      console.warn("graph: extended PermissionSet query failed, using the basic one:", (err as Error).message);
+      rows = await this.soql<Row>("SELECT Name, Label, IsCustom, Type, NamespacePrefix FROM PermissionSet");
+    }
+    return rows.map((r) => ({
+      name: r.Name,
+      label: text(r.Label),
+      isCustom: Boolean(r.IsCustom),
+      type: text(r.Type),
+      namespace: text(r.NamespacePrefix),
+      description: text(r.Description),
+      license: text(r.License?.Name),
+      isOwnedByProfile: Boolean(r.IsOwnedByProfile),
+    }));
   }
 
   // ponytail: the Tooling field names below (ValidationRule.ValidationName, WorkflowAlert.DeveloperName,
@@ -137,26 +189,102 @@ export class JsforceGraphSource implements GraphSource {
       NamespacePrefix: string | null;
       EntityDefinition: { QualifiedApiName: string } | null;
     }>("SELECT Id, ValidationName, Active, Description, ErrorMessage, NamespacePrefix, EntityDefinition.QualifiedApiName FROM ValidationRule");
-    return rows.flatMap((r) =>
-      r.EntityDefinition?.QualifiedApiName
-        ? [{ sfId: r.Id, objectName: r.EntityDefinition.QualifiedApiName, name: r.ValidationName, active: Boolean(r.Active), description: text(r.Description), errorMessage: text(r.ErrorMessage), namespace: text(r.NamespacePrefix) }]
-        : []
-    );
+    // A rule whose object the Tooling API cannot name is still a node (native keeps it); objectName is "".
+    return rows.map((r) => ({
+      sfId: r.Id,
+      objectName: r.EntityDefinition?.QualifiedApiName ?? "",
+      name: r.ValidationName,
+      active: Boolean(r.Active),
+      description: text(r.Description),
+      errorMessage: text(r.ErrorMessage),
+      namespace: text(r.NamespacePrefix),
+    }));
+  }
+
+  // Tooling ValidationRule.Metadata only works for one row, so formulas come from the Metadata API
+  // (at most 10 names per read). A failing batch only loses its own details.
+  async validationRuleDetails(fullNames: string[]): Promise<Map<string, ValidationRuleDetails>> {
+    const out = new Map<string, ValidationRuleDetails>();
+    for (let i = 0; i < fullNames.length; i += 10) {
+      const chunk = fullNames.slice(i, i + 10);
+      try {
+        const res = (await this.conn.metadata.read("ValidationRule", chunk)) as unknown;
+        const list = (Array.isArray(res) ? res : [res]) as Array<Record<string, unknown> | null>;
+        for (const r of list) {
+          const full = r && typeof r.fullName === "string" ? r.fullName : null;
+          if (!full) continue;
+          out.set(full, { errorConditionFormula: text(r?.errorConditionFormula), errorDisplayField: text(r?.errorDisplayField) });
+        }
+      } catch (err) {
+        console.warn("graph: validation rule metadata read failed:", (err as Error).message);
+      }
+    }
+    return out;
+  }
+
+  async flowDefinitions(): Promise<FlowDefinitionMeta[]> {
+    type Row = {
+      ApiName: string;
+      Label: string | null;
+      Description: string | null;
+      ProcessType: string | null;
+      TriggerType: string | null;
+      TriggerObjectOrEventId?: string | null;
+      IsActive: boolean;
+      VersionNumber: number | null;
+      NamespacePrefix: string | null;
+      ManageableState: string | null;
+    };
+    const base = "ApiName, Label, Description, ProcessType, TriggerType, IsActive, VersionNumber, NamespacePrefix, ManageableState";
+    let rows: Row[];
+    try {
+      rows = await this.soql<Row>(`SELECT ${base}, TriggerObjectOrEventId FROM FlowDefinitionView`);
+    } catch {
+      // Not every API version exposes the trigger column on FlowDefinitionView; the definitions still read without it.
+      rows = await this.soql<Row>(`SELECT ${base} FROM FlowDefinitionView`);
+    }
+    return rows.map((r) => ({
+      apiName: r.ApiName,
+      label: text(r.Label),
+      description: text(r.Description),
+      processType: text(r.ProcessType),
+      triggerType: text(r.TriggerType),
+      triggerObjectOrEventId: text(r.TriggerObjectOrEventId),
+      isActive: Boolean(r.IsActive),
+      versionNumber: typeof r.VersionNumber === "number" ? r.VersionNumber : null,
+      namespace: text(r.NamespacePrefix),
+      manageableState: text(r.ManageableState),
+    }));
   }
 
   async emailAlerts(): Promise<EmailAlertInput[]> {
-    const rows = await this.tooling<{
+    type Row = {
       Id: string;
       DeveloperName: string;
       Description: string | null;
       NamespacePrefix: string | null;
+      CcEmails?: unknown;
+      SenderType?: string | null;
+      TemplateId?: string | null;
       EntityDefinition: { QualifiedApiName: string } | null;
-    }>("SELECT Id, DeveloperName, Description, NamespacePrefix, EntityDefinition.QualifiedApiName FROM WorkflowAlert");
-    return rows.flatMap((r) =>
-      r.EntityDefinition?.QualifiedApiName
-        ? [{ sfId: r.Id, objectName: r.EntityDefinition.QualifiedApiName, name: r.DeveloperName, description: text(r.Description), namespace: text(r.NamespacePrefix) }]
-        : []
-    );
+    };
+    let rows: Row[];
+    try {
+      rows = await this.tooling<Row>("SELECT Id, DeveloperName, NamespacePrefix, Description, CcEmails, SenderType, TemplateId, EntityDefinitionId, EntityDefinition.QualifiedApiName FROM WorkflowAlert");
+    } catch (err) {
+      console.warn("graph: extended WorkflowAlert query failed, using the basic one:", (err as Error).message);
+      rows = await this.tooling<Row>("SELECT Id, DeveloperName, Description, NamespacePrefix, EntityDefinition.QualifiedApiName FROM WorkflowAlert");
+    }
+    return rows.map((r) => ({
+      sfId: r.Id,
+      objectName: r.EntityDefinition?.QualifiedApiName ?? "",
+      name: r.DeveloperName,
+      description: text(r.Description),
+      namespace: text(r.NamespacePrefix),
+      ccEmails: r.CcEmails ?? null,
+      senderType: text(r.SenderType),
+      templateId: text(r.TemplateId),
+    }));
   }
 
   // Approval processes live in ProcessDefinition (a regular sObject, not Tooling); TableEnumOrId is a
@@ -169,9 +297,9 @@ export class JsforceGraphSource implements GraphSource {
       TableEnumOrId: string;
       State: string | null;
       Description: string | null;
-      NamespacePrefix: string | null;
-    }>("SELECT Id, Name, DeveloperName, TableEnumOrId, State, Description, NamespacePrefix FROM ProcessDefinition WHERE Type = 'Approval'");
-    return rows.map((r) => ({ sfId: r.Id, objectName: r.TableEnumOrId, name: r.DeveloperName, label: r.Name, state: text(r.State), description: text(r.Description), namespace: text(r.NamespacePrefix) }));
+    }>("SELECT Id, Name, DeveloperName, TableEnumOrId, State, Description FROM ProcessDefinition WHERE Type = 'Approval'");
+    // ProcessDefinition has no NamespacePrefix column; asking for it fails the whole query.
+    return rows.map((r) => ({ sfId: r.Id, objectName: r.TableEnumOrId, name: r.DeveloperName, label: r.Name, state: text(r.State), description: text(r.Description), namespace: null }));
   }
 
   // ponytail: EntityDefinition.InternalSharingModel / ExternalSharingModel follow the documented schema but
@@ -219,6 +347,7 @@ export class JsforceGraphSource implements GraphSource {
           hit = conn.describe(name).then((d) => ({
             name: d.name,
             queryable: Boolean(d.queryable),
+            custom: Boolean(d.custom),
             fields: d.fields.map((f) => ({ name: f.name, type: f.type, nameField: Boolean(f.nameField), referenceTo: (f.referenceTo ?? []).filter(Boolean) as string[] })),
             childRelationships: d.childRelationships.map((r) => ({ childSObject: r.childSObject, field: r.field, relationshipName: text(r.relationshipName) })),
           }));
@@ -240,6 +369,8 @@ export class FakeGraphSource implements GraphSource {
   permissionSets: PermissionSetMeta[] = [];
   rules: ValidationRuleInput[] = [];
   alerts: EmailAlertInput[] = [];
+  flowDefs: FlowDefinitionMeta[] = [];
+  ruleDetails = new Map<string, ValidationRuleDetails>();
   processes: ApprovalProcessInput[] = [];
   sharing: Record<string, SharingSettings> = {};
   counts: Record<string, number> = {};
@@ -275,6 +406,14 @@ export class FakeGraphSource implements GraphSource {
   async emailAlerts() {
     this.guard("emailAlerts");
     return this.alerts;
+  }
+  async flowDefinitions() {
+    this.guard("flowDefinitions");
+    return this.flowDefs;
+  }
+  async validationRuleDetails(_names: string[]) {
+    this.guard("validationRuleDetails");
+    return this.ruleDetails;
   }
   async approvalProcesses() {
     this.guard("approvalProcesses");

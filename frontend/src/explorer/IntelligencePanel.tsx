@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Alert, Box, Button, Chip, CircularProgress, Collapse, IconButton, InputAdornment, Skeleton, Stack, TextField, ToggleButton, ToggleButtonGroup, Tooltip, Typography, useMediaQuery } from "@mui/material";
+import { Alert, AlertTitle, Box, Button, Chip, CircularProgress, Collapse, IconButton, InputAdornment, Skeleton, Stack, TextField, ToggleButton, ToggleButtonGroup, Tooltip, Typography, useMediaQuery } from "@mui/material";
 import AccountTreeOutlined from "@mui/icons-material/AccountTreeOutlined";
 import BoltOutlined from "@mui/icons-material/BoltOutlined";
 import ChevronRight from "@mui/icons-material/ChevronRight";
 import CodeOutlined from "@mui/icons-material/CodeOutlined";
+import ExpandMore from "@mui/icons-material/ExpandMore";
 import HubOutlined from "@mui/icons-material/HubOutlined";
 import InfoOutlined from "@mui/icons-material/InfoOutlined";
 import KeyboardDoubleArrowLeft from "@mui/icons-material/KeyboardDoubleArrowLeft";
@@ -16,36 +17,63 @@ import PushPinOutlined from "@mui/icons-material/PushPinOutlined";
 import SearchRounded from "@mui/icons-material/SearchRounded";
 import ShieldOutlined from "@mui/icons-material/ShieldOutlined";
 import TuneOutlined from "@mui/icons-material/TuneOutlined";
-import type { GraphApi, GraphNode, ImpactDirection, IntelligenceCategory, IntelligenceItem, IntelligenceStatus, NodeDetail } from "./graphApi";
+import type { ConnectionRow, GraphApi, GraphNode, ImpactDirection, IntelligenceCategory, IntelligenceItem, IntelligenceStatus, NodeDetail } from "./graphApi";
+import { rowSetupRef } from "./drilldownModel";
+import { IntelligenceDrilldown, type DrilldownSelection } from "./IntelligenceDrilldown";
 import {
   buildEmptyStateMessage,
+  COUNTS_ERROR_TITLE,
+  COUNTS_TRUNCATED_NOTE,
+  DETAIL_ERROR_TITLE,
+  DETAIL_MISSING,
+  directConnectionNote,
   directionLabel,
   distinctTargets,
-  fieldMetrics,
+  drillDirection,
+  FIELDS_EMPTY,
+  FIELDS_ERROR_FALLBACK,
+  FIELDS_ERROR_TITLE,
+  FIELDS_NO_MATCH,
+  fieldRelationshipRows,
+  fieldRowTitle,
+  fieldTotals,
   filterFields,
   formatTargets,
   groupIntelligenceItems,
-  incomingDrillEntries,
-  outgoingRelationshipFields,
+  GROUP_DRILL_TITLE,
+  hasFields,
+  IMPACT_EMPTY,
+  IMPACT_ERROR_FALLBACK,
+  IMPACT_ERROR_TITLE,
+  impactColumnHeader,
+  impactTypeBreakdown,
+  incomingEdgeCounts,
+  LOAD_COUNTS_LABEL,
+  LOAD_COUNTS_TITLE,
+  LOOKUP_EDGE_TYPE_KEY,
+  MASTER_DETAIL_EDGE_TYPE_KEY,
+  outgoingFieldRows,
+  OUTGOING_EMPTY,
+  OUTGOING_HEADING,
   overviewRows,
-  pluralizeTypeLabel,
   relationshipCounts,
-  relationshipKindLabel,
+  relationshipRows,
+  sortFieldsByLabel,
   targetWithCount,
   technicalAttributes,
-  yesNoUnknown,
-  type DrillEntry,
   type FieldFilter,
+  type FieldTotals,
 } from "./intelligenceModel";
 import { errorMessage } from "./nodeStyle";
-import type { ObjectRelationshipView } from "./objectRelationshipView";
+import type { ObjectRelationshipView, VisibilityMode } from "./objectRelationshipView";
+import type { OpenResult } from "./openInSalesforce";
+import type { MetadataNodeRef } from "./salesforceLinks";
 
 // The Intelligence Panel (port of native oiNodeDetailPanel) for Object analyze mode: everything the graph and
 // the live org can say about the selected component, in collapsible sections. The server groups and explains
 // (intelligence service); this file only lays it out. Restyled with the Tech Debt MUI theme.
 
 const mono = { fontFamily: "'JetBrains Mono', Consolas, monospace" } as const;
-const IMPACT_DEPTH = 2;
 
 type SectionId = "overview" | "fieldRelationship" | "fields" | "relationships" | "sharing" | "automation" | "code" | "security" | "impact" | "technical";
 
@@ -136,10 +164,8 @@ function KeyValueGrid({ rows }: { rows: Array<[string, string]> }) {
 }
 
 type Row = { nodeKey: string; label: string; sub: string | null; status?: IntelligenceStatus | null };
-type Drill = { title: string; rows: Row[] };
 
 const itemRow = (i: IntelligenceItem): Row => ({ nodeKey: i.nodeKey, label: i.label, sub: `${i.kindLabel} · ${directionLabel(i.direction)}`, status: i.status });
-const entryRow = (e: DrillEntry): Row => ({ nodeKey: e.nodeKey, label: e.label, sub: e.detail });
 
 function RowList({ rows, onOpen }: { rows: Row[]; onOpen: (nodeKey: string) => void }) {
   return (
@@ -160,8 +186,8 @@ function RowList({ rows, onOpen }: { rows: Row[]; onOpen: (nodeKey: string) => v
 const TableHead = ({ cols }: { cols: string[] }) => (
   <Box component="thead">
     <Box component="tr">
-      {cols.map((c) => (
-        <Box key={c} component="th" sx={{ textAlign: "left", fontSize: 10.5, fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase", color: "text.secondary", pb: 0.5, pr: 1, whiteSpace: "nowrap" }}>
+      {cols.map((c, i) => (
+        <Box key={`${c}:${i}`} component="th" sx={{ textAlign: "left", fontSize: 10.5, fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase", color: "text.secondary", pb: 0.5, pr: 1, whiteSpace: "nowrap" }}>
           {c}
         </Box>
       ))}
@@ -182,19 +208,33 @@ type Props = {
   onSelectNode: (nodeKey: string) => void;
   // Absent where the canvas cannot emphasise nodes (the radial Field canvas), which hides the button.
   onHighlight?: (nodeKeys: string[] | null) => void;
+  // The object the canvas is centred on. The Self / Referenced / Referencing counts only describe that object,
+  // so they are hidden for any other selection. Defaults to the view's root object.
+  centerNodeKey?: string | null;
+  // The canvas's Business / System / All filter, which also decides whether system lookups are listed.
+  visibilityMode?: VisibilityMode;
+  // Drill-down row actions. Without them the buttons are hidden.
+  openSetup?: (node: MetadataNodeRef) => Promise<OpenResult>;
+  onShowOnGraph?: (nodeKey: string) => void;
 };
 
 export function IntelligencePanel(p: Props) {
   const [collapsed, setCollapsed] = useState(false);
   const [pinned, setPinned] = useState(false);
   const [open, setOpen] = useState<Record<SectionId, boolean>>(DEFAULT_OPEN);
+  // "Coverage details" open state per Intelligence section; kept with the layout while pinned.
+  const [coverageOpen, setCoverageOpen] = useState<Record<string, boolean>>({});
 
   // Pinning keeps the section layout the user arranged; unpinned, every new node starts from the defaults.
   useEffect(() => {
-    if (!pinned) setOpen(DEFAULT_OPEN);
+    if (!pinned) {
+      setOpen(DEFAULT_OPEN);
+      setCoverageOpen({});
+    }
   }, [p.nodeKey, pinned]);
 
   const toggle = (id: SectionId) => setOpen((o) => ({ ...o, [id]: !o[id] }));
+  const toggleCoverage = (id: string) => setCoverageOpen((o) => ({ ...o, [id]: !o[id] }));
 
   return (
     <Box
@@ -231,16 +271,16 @@ export function IntelligencePanel(p: Props) {
       </Stack>
       {!collapsed && (
         <Box sx={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
-          {p.nodeKey ? <PanelBody key={p.nodeKey} {...p} nodeKey={p.nodeKey} open={open} onToggle={toggle} /> : <Typography sx={{ p: 2, fontSize: 13, color: "text.secondary" }}>Select a node to see its details.</Typography>}
+          {p.nodeKey ? <PanelBody key={p.nodeKey} {...p} nodeKey={p.nodeKey} open={open} onToggle={toggle} coverageOpen={coverageOpen} onToggleCoverage={toggleCoverage} /> : <Typography sx={{ p: 2, fontSize: 13, color: "text.secondary" }}>Select a node to see its details.</Typography>}
         </Box>
       )}
     </Box>
   );
 }
 
-type BodyProps = Props & { nodeKey: string; open: Record<SectionId, boolean>; onToggle: (id: SectionId) => void };
+type BodyProps = Props & { nodeKey: string; open: Record<SectionId, boolean>; onToggle: (id: SectionId) => void; coverageOpen: Record<string, boolean>; onToggleCoverage: (id: string) => void };
 
-function PanelBody({ api, connectionId, nodeKey, view, workingNodes, highlighted, onSelectNode, onHighlight, open, onToggle }: BodyProps) {
+function PanelBody({ api, connectionId, nodeKey, view, highlighted, onSelectNode, onHighlight, centerNodeKey, visibilityMode = "all", openSetup, onShowOnGraph, open, onToggle, coverageOpen, onToggleCoverage }: BodyProps) {
   const detail = useQuery({ queryKey: ["graph", "detail", connectionId, nodeKey], queryFn: () => api.detail(nodeKey), staleTime: 60_000 });
   const node = detail.data?.node;
   const isObject = node?.kind === "CustomObject";
@@ -248,22 +288,21 @@ function PanelBody({ api, connectionId, nodeKey, view, workingNodes, highlighted
   const intelligence = useQuery({ queryKey: ["graph", "intelligence", connectionId, nodeKey], queryFn: () => api.intelligence(nodeKey), enabled: Boolean(node), staleTime: 60_000 });
 
   const [showFields, setShowFields] = useState(false);
-  const [drill, setDrill] = useState<Drill | null>(null);
+  const [drilldown, setDrilldown] = useState<DrilldownSelection | null>(null);
+  const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(new Set());
   const [showTech, setShowTech] = useState(false);
   const [wantCounts, setWantCounts] = useState(false);
   const [impactDir, setImpactDir] = useState<ImpactDirection | null>(null);
 
-  const fields = useQuery({
-    queryKey: ["graph", "fields", connectionId, node?.fqn],
-    queryFn: () => api.fields(node!.fqn),
-    enabled: Boolean(isObject) && (showFields || open.fields || open.relationships),
-    staleTime: 60_000,
-  });
+  // The live field list: only fetched once the user asks to see the fields, and kept cached when hidden again.
+  const fields = useQuery({ queryKey: ["graph", "fields", connectionId, node?.fqn], queryFn: () => api.fields(node!.fqn), enabled: Boolean(isObject) && showFields, staleTime: 60_000 });
+  // Outgoing Lookup / Master-Detail fields straight from the scanned graph.
+  const relFields = useQuery({ queryKey: ["graph", "relationshipFields", connectionId, nodeKey], queryFn: () => api.relationshipFields(nodeKey), enabled: Boolean(isObject) && open.relationships, staleTime: 60_000 });
   const sharing = useQuery({ queryKey: ["graph", "sharing", connectionId, node?.fqn], queryFn: () => api.sharing(node!.fqn), enabled: Boolean(isObject) && open.sharing, staleTime: 60_000, retry: false });
-  const outgoing = useMemo(() => outgoingRelationshipFields(fields.data?.fields ?? []), [fields.data]);
-  const targets = useMemo(() => distinctTargets(outgoing), [outgoing]);
+  const outgoingRows = useMemo(() => outgoingFieldRows(relFields.data ?? [], visibilityMode), [relFields.data, visibilityMode]);
+  const targets = useMemo(() => distinctTargets(outgoingRows.map((r) => ({ referenceTo: r.targets }))), [outgoingRows]);
   const counts = useQuery({ queryKey: ["graph", "recordCounts", connectionId, targets.join(",")], queryFn: () => api.recordCounts(targets), enabled: wantCounts && targets.length > 0, staleTime: 60_000, retry: false });
-  const impact = useQuery({ queryKey: ["graph", "impact", connectionId, nodeKey, impactDir], queryFn: () => api.impact(nodeKey, impactDir!, IMPACT_DEPTH), enabled: impactDir !== null, staleTime: 60_000, retry: false });
+  const impact = useQuery({ queryKey: ["graph", "impact", connectionId, nodeKey, impactDir], queryFn: () => api.impact(nodeKey, impactDir!), enabled: impactDir !== null, staleTime: 60_000, retry: false });
 
   if (detail.isLoading) {
     return (
@@ -277,29 +316,30 @@ function PanelBody({ api, connectionId, nodeKey, view, workingNodes, highlighted
   if (detail.isError || !node || !detail.data) {
     return (
       <Alert severity="error" sx={{ m: 1.5 }} action={detail.isError ? <Button size="small" color="inherit" onClick={() => void detail.refetch()}>Retry</Button> : undefined}>
-        <strong>Couldn't load this component.</strong> {detail.isError ? errorMessage(detail.error) : "No detail available."}
+        <AlertTitle>{detail.isError ? DETAIL_ERROR_TITLE : DETAIL_MISSING}</AlertTitle>
+        {detail.isError ? errorMessage(detail.error) : null}
       </Alert>
     );
   }
 
   const data: NodeDetail = detail.data;
   const counted = counts.data?.counts;
-  const relCounts = isObject ? relationshipCounts(view) : null;
-  const fieldNodeByFqn = new Map(workingNodes.filter((n) => n.kind === "CustomField").map((n) => [n.fqn, n]));
+  const centreKey = centerNodeKey === undefined ? (view?.rootObject?.nodeKey ?? null) : centerNodeKey;
+  const centreCounts = isObject && nodeKey === centreKey ? relationshipCounts(view) : null;
+  const incoming = incomingEdgeCounts(data.edgeSummary);
+  const totals = fieldTotals(node, data.edgeSummary, fields.data?.fields);
   const category = (key: string): IntelligenceCategory | undefined => intelligence.data?.categories.find((c) => c.category === key);
   const technical = technicalAttributes(node);
+  const relationshipSectionRows = !isObject ? relationshipRows(data.edgeSummary) : [];
+  const fieldRelRows = isField ? fieldRelationshipRows(node) : [];
 
-  if (drill) {
-    return (
-      <Box sx={{ p: 1.5 }}>
-        <Button size="small" onClick={() => setDrill(null)} sx={{ ml: -0.5, mb: 1, ...outlineButton }}>← Back</Button>
-        <Typography sx={{ fontSize: 13, fontWeight: 700, mb: 1 }}>{drill.title}</Typography>
-        <RowList rows={drill.rows} onOpen={(key) => { setDrill(null); onSelectNode(key); }} />
-      </Box>
-    );
-  }
-
-  const openGroup = (g: ReturnType<typeof groupIntelligenceItems>[number], label: string) => setDrill({ title: `${pluralizeTypeLabel(g.label)} · ${label}`, rows: g.items.map(itemRow) });
+  const openDrilldown = (direction: DrilldownSelection["direction"], edgeTypeKey: string, relationshipLabel: string) => setDrilldown({ nodeKey, anchorLabel: node.label, direction, edgeTypeKey, relationshipLabel });
+  const toggleGroup = (key: string) =>
+    setOpenGroups((s) => {
+      const next = new Set(s);
+      if (!next.delete(key)) next.add(key);
+      return next;
+    });
 
   const intelligenceSection = (id: "automation" | "code" | "security", icon: ReactNode) => {
     const cat = category(id);
@@ -319,37 +359,41 @@ function PanelBody({ api, connectionId, nodeKey, view, workingNodes, highlighted
               <Typography sx={{ fontSize: 13, color: "text.secondary" }}>{buildEmptyStateMessage(cat.label, cat.emptyState)}</Typography>
             ) : (
               <Stack spacing={1}>
-                {groups.map((g) => (
-                  <Box key={g.typeKey}>
-                    <Box
-                      component="button"
-                      type="button"
-                      onClick={() => (g.drillDown ? openGroup(g, directionLabel(g.items[0].direction)) : undefined)}
-                      sx={{ all: "unset", boxSizing: "border-box", width: "100%", display: "flex", alignItems: "center", gap: 1, py: 0.25, cursor: g.drillDown ? "pointer" : "default", "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main" } }}
-                    >
-                      <Typography sx={{ flex: 1, fontSize: 12, fontWeight: 700 }}>{g.label}</Typography>
-                      <CountPill value={g.items.length} />
-                      {g.drillDown && <ChevronRight sx={{ fontSize: 16, color: "text.secondary" }} />}
+                {groups.map((g) => {
+                  const expanded = openGroups.has(`${id}:${g.groupKey}`);
+                  return (
+                    <Box key={g.groupKey}>
+                      <Box
+                        component="button"
+                        type="button"
+                        title={g.drillDown ? GROUP_DRILL_TITLE : undefined}
+                        aria-expanded={g.drillDown ? undefined : expanded}
+                        onClick={() => (g.drillDown ? openDrilldown(drillDirection(g.direction), g.edgeTypeKey, g.label) : toggleGroup(`${id}:${g.groupKey}`))}
+                        sx={{ all: "unset", boxSizing: "border-box", width: "100%", display: "flex", alignItems: "center", gap: 1, py: 0.25, cursor: "pointer", "&:hover": { bgcolor: "action.hover" }, "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main" } }}
+                      >
+                        <Typography sx={{ flex: 1, fontSize: 12, fontWeight: 700 }}>{g.label}</Typography>
+                        <CountPill value={g.items.length} />
+                        {g.drillDown ? <ChevronRight sx={{ fontSize: 16, color: "text.secondary" }} /> : <ExpandMore sx={{ fontSize: 16, color: "text.secondary", transform: expanded ? "none" : "rotate(-90deg)" }} />}
+                      </Box>
+                      {!g.drillDown && expanded && <RowList rows={g.items.map(itemRow)} onOpen={onSelectNode} />}
                     </Box>
-                    {!g.drillDown && <RowList rows={g.items.map(itemRow)} onOpen={onSelectNode} />}
-                  </Box>
-                ))}
+                  );
+                })}
               </Stack>
             )}
             {cat.truncated && <Typography sx={{ mt: 1, fontSize: 11.5, color: "text.secondary" }}>Showing the first results only — more exist than are listed here.</Typography>}
-            {cat.coverageNote && (
-              <Box component="details" sx={{ mt: 1, fontSize: 11.5, color: "text.secondary" }}>
-                <summary style={{ cursor: "pointer" }}>Coverage details</summary>
-                <Typography sx={{ fontSize: 11.5, mt: 0.5 }}>{cat.coverageNote}</Typography>
+            <Box sx={{ mt: 1 }}>
+              <Box component="button" type="button" aria-expanded={Boolean(coverageOpen[id])} onClick={() => onToggleCoverage(id)} sx={{ all: "unset", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 0.5, fontSize: 11.5, color: "text.secondary", "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main" } }}>
+                <ChevronRight sx={{ fontSize: 14, transform: coverageOpen[id] ? "rotate(90deg)" : "none" }} />
+                Coverage details
               </Box>
-            )}
+              {coverageOpen[id] && <Typography sx={{ fontSize: 11.5, color: "text.secondary", mt: 0.5 }}>{cat.coverageNote ?? "No coverage limitations were reported for this category."}</Typography>}
+            </Box>
           </>
         )}
       </Section>
     );
   };
-
-  const filteredHint = (n: number) => (n === 0 ? "No matches" : null);
 
   return (
     <Box>
@@ -357,89 +401,94 @@ function PanelBody({ api, connectionId, nodeKey, view, workingNodes, highlighted
         <KeyValueGrid rows={overviewRows(node, data.parent?.label ?? null)} />
       </Section>
 
-      {isField && <FieldRelationshipSection node={node} data={data} open={open.fieldRelationship} onToggle={onToggle} />}
-
-      {isObject && (
-        <Section id="fields" title="Fields" icon={<ListAltOutlined />} open={open.fields} onToggle={onToggle} count={fields.data ? fields.data.fields.length : "—"}>
-          <FieldsBody fields={fields} apiName={node.fqn} show={showFields} onShow={setShowFields} fieldNodeByFqn={fieldNodeByFqn} onSelectNode={onSelectNode} hint={filteredHint} />
+      {fieldRelRows.length > 0 && (
+        <Section id="fieldRelationship" title="Relationship" icon={<HubOutlined />} open={open.fieldRelationship} onToggle={onToggle}>
+          <KeyValueGrid rows={fieldRelRows} />
         </Section>
       )}
 
-      <Section id="relationships" title="Relationships" icon={<HubOutlined />} open={open.relationships} onToggle={onToggle}>
-        {isObject ? (
-          <Stack spacing={1.25}>
-            {relCounts && (
+      {isObject && hasFields(totals) && (
+        <Section id="fields" title="Fields" icon={<ListAltOutlined />} open={open.fields} onToggle={onToggle} count={fields.data ? fields.data.fields.length : (totals.total ?? "—")}>
+          <FieldsBody fields={fields} totals={totals} show={showFields} onShow={setShowFields} onSelectNode={onSelectNode} />
+        </Section>
+      )}
+
+      {!isField && (
+        <Section id="relationships" title="Relationships" icon={<HubOutlined />} open={open.relationships} onToggle={onToggle} count={isObject ? (centreCounts ? 5 : 2) : relationshipSectionRows.length}>
+          {isObject ? (
+            <Stack spacing={1.25}>
               <Stack spacing={0.5}>
-                <CountRow label="Incoming Lookups" value={relCounts.incomingLookups} onClick={relCounts.incomingLookups > 0 ? () => setDrill({ title: "Incoming Lookups", rows: incomingDrillEntries(view, "Lookup").map(entryRow) }) : undefined} />
-                <CountRow label="Incoming Master-Detail" value={relCounts.incomingMasterDetail} onClick={relCounts.incomingMasterDetail > 0 ? () => setDrill({ title: "Incoming Master-Detail", rows: incomingDrillEntries(view, "MasterDetail").map(entryRow) }) : undefined} />
-                <CountRow label="Self Relationships" value={relCounts.selfRelationships} />
-                <CountRow label="Referenced Objects" value={relCounts.referencedObjects} />
-                <CountRow label="Referencing Objects" value={relCounts.referencingObjects} />
+                {centreCounts && (
+                  <>
+                    <CountRow label="Self Relationships" value={centreCounts.selfRelationships} />
+                    <CountRow label="Referenced Objects" value={centreCounts.referencedObjects} />
+                    <CountRow label="Referencing Objects" value={centreCounts.referencingObjects} />
+                  </>
+                )}
+                <CountRow label="Incoming Lookups" value={incoming.incomingLookups} onClick={() => openDrilldown("incoming", LOOKUP_EDGE_TYPE_KEY, "Incoming Lookups")} />
+                <CountRow label="Incoming Master-Detail" value={incoming.incomingMasterDetail} onClick={() => openDrilldown("incoming", MASTER_DETAIL_EDGE_TYPE_KEY, "Incoming Master-Detail")} />
               </Stack>
-            )}
-            {fields.isLoading ? (
-              <Skeleton variant="rounded" height={48} />
-            ) : fields.isError ? (
-              <Alert severity="error" action={<Button size="small" color="inherit" onClick={() => void fields.refetch()}>Retry</Button>}>
-                {errorMessage(fields.error)}
-              </Alert>
-            ) : outgoing.length === 0 ? (
-              <Typography sx={{ fontSize: 13, color: "text.secondary" }}>No outgoing relationships</Typography>
-            ) : (
-              <>
-                <Typography sx={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "text.secondary" }}>Outgoing relationship fields</Typography>
-                <Box sx={{ overflowX: "auto" }}>
-                  <Box component="table" sx={{ borderCollapse: "collapse", width: "100%" }}>
-                    <TableHead cols={["Field", "Type", "Required", "Cascade Delete", "Target Object(s)"]} />
-                    <Box component="tbody">
-                      {outgoing.map((f) => {
-                        const t = formatTargets(f.referenceTo, (n) => targetWithCount(n, counted));
-                        return (
-                          <Box component="tr" key={f.name}>
-                            <Box component="td" sx={cell}>{f.label}</Box>
-                            <Box component="td" sx={cell}>{relationshipKindLabel(f)}</Box>
-                            <Box component="td" sx={cell}>{yesNoUnknown(f.required)}</Box>
-                            <Box component="td" sx={cell}>{f.cascadeDelete === null ? "Not available" : yesNoUnknown(f.cascadeDelete)}</Box>
-                            <Box component="td" sx={cell} title={t.title}>{t.text}</Box>
-                          </Box>
-                        );
-                      })}
+              <Typography sx={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "text.secondary" }}>{OUTGOING_HEADING}</Typography>
+              {relFields.isLoading ? (
+                <Skeleton variant="rounded" height={48} />
+              ) : relFields.isError ? (
+                <Alert severity="error" action={<Button size="small" color="inherit" onClick={() => void relFields.refetch()}>Retry</Button>}>
+                  {errorMessage(relFields.error)}
+                </Alert>
+              ) : outgoingRows.length === 0 ? (
+                <Alert severity="info">
+                  <AlertTitle>{OUTGOING_EMPTY.title}</AlertTitle>
+                  {OUTGOING_EMPTY.message}
+                </Alert>
+              ) : (
+                <>
+                  <Box sx={{ overflowX: "auto" }}>
+                    <Box component="table" sx={{ borderCollapse: "collapse", width: "100%" }}>
+                      <TableHead cols={["Field", "Type", "Required", "Cascade Delete", "Target Object(s)"]} />
+                      <Box component="tbody">
+                        {outgoingRows.map((r) => {
+                          const t = formatTargets(r.targets, (n) => targetWithCount(n, counted));
+                          return (
+                            <Box component="tr" key={r.nodeKey}>
+                              <Box component="td" sx={cell} title={r.apiName}>{r.label}</Box>
+                              <Box component="td" sx={cell}>{r.type}</Box>
+                              <Box component="td" sx={cell}>{r.required}</Box>
+                              <Box component="td" sx={cell}>{r.cascadeDelete}</Box>
+                              <Box component="td" sx={cell} title={t.title}>{t.text}</Box>
+                            </Box>
+                          );
+                        })}
+                      </Box>
                     </Box>
                   </Box>
-                </Box>
-                {targets.length > 0 && !counts.data && (
-                  <Button size="small" variant="outlined" disabled={counts.isFetching} onClick={() => (wantCounts ? void counts.refetch() : setWantCounts(true))} sx={{ alignSelf: "flex-start", ...outlineButton }}>
-                    {counts.isFetching ? <CircularProgress size={14} sx={{ mr: 1 }} /> : null}Load record counts
-                  </Button>
-                )}
-                {counts.isError && <Alert severity="error">{errorMessage(counts.error)}</Alert>}
-                {counts.data?.truncated && <Typography sx={{ fontSize: 11.5, color: "text.secondary" }}>Counts were loaded for the first {Object.keys(counts.data.counts).length} objects only.</Typography>}
-              </>
-            )}
-          </Stack>
-        ) : (
-          <Stack spacing={0.5}>
-            {data.edgeSummary.length === 0 ? (
-              <Typography sx={{ fontSize: 13, color: "text.secondary" }}>No relationships found in the last scan.</Typography>
-            ) : (
-              data.edgeSummary.map((row) => (
-                <CountRow
-                  key={`${row.typeKey}:${row.direction}`}
-                  label={`${row.direction === "out" ? "→" : "←"} ${row.role || row.kind.replace(/_/g, " ").toLowerCase()}`}
-                  value={row.count}
-                  onClick={() =>
-                    setDrill({
-                      title: row.role || row.kind,
-                      rows: data.edges.filter((e) => e.typeKey === row.typeKey && e.direction === row.direction).map((e) => ({ nodeKey: e.other.nodeKey, label: e.other.label, sub: e.other.kindLabel })),
-                    })
-                  }
-                />
-              ))
-            )}
-            {data.edgeTotal > 0 && <Typography sx={{ fontSize: 11.5, color: "text.secondary", mt: 0.5 }}>{data.edgeTotal} direct {data.edgeTotal === 1 ? "connection" : "connections"}{data.capped ? " (list capped)" : ""}.</Typography>}
-          </Stack>
-        )}
-      </Section>
+                  {targets.length > 0 && !counts.data && (
+                    <Button size="small" variant="outlined" title={LOAD_COUNTS_TITLE} disabled={counts.isFetching} onClick={() => (wantCounts ? void counts.refetch() : setWantCounts(true))} sx={{ alignSelf: "flex-start", ...outlineButton }}>
+                      {counts.isFetching ? <CircularProgress size={14} sx={{ mr: 1 }} /> : null}
+                      {LOAD_COUNTS_LABEL}
+                    </Button>
+                  )}
+                  {counts.isError && (
+                    <Alert severity="error" action={<Button size="small" color="inherit" onClick={() => void counts.refetch()}>Retry</Button>}>
+                      <AlertTitle>{COUNTS_ERROR_TITLE}</AlertTitle>
+                      {errorMessage(counts.error)}
+                    </Alert>
+                  )}
+                  {counts.data?.truncated && <Typography sx={{ fontSize: 11.5, color: "text.secondary" }}>{COUNTS_TRUNCATED_NOTE}</Typography>}
+                </>
+              )}
+            </Stack>
+          ) : (
+            <Stack spacing={0.5}>
+              {relationshipSectionRows.length === 0 ? (
+                <Typography sx={{ fontSize: 13, color: "text.secondary" }}>No relationships found in the last scan.</Typography>
+              ) : (
+                relationshipSectionRows.map((row) => <CountRow key={row.key} label={row.label} value={row.count} onClick={() => openDrilldown(row.direction, row.edgeTypeKey, row.relationshipLabel)} />)
+              )}
+              {data.edgeTotal > 0 && <Typography sx={{ fontSize: 11.5, color: "text.secondary", mt: 0.5 }}>{directConnectionNote(data.edgeTotal)}</Typography>}
+            </Stack>
+          )}
+        </Section>
+      )}
 
       {isObject && (
         <Section id="sharing" title="Sharing Settings" icon={<LockOutlined />} open={open.sharing} onToggle={onToggle}>
@@ -468,33 +517,45 @@ function PanelBody({ api, connectionId, nodeKey, view, workingNodes, highlighted
           <Button size="small" variant={impactDir === "upstream" ? "contained" : "outlined"} onClick={() => setImpactDir("upstream")} sx={outlineButton}>What does this depend on?</Button>
           <Button size="small" variant={impactDir === "downstream" ? "contained" : "outlined"} onClick={() => setImpactDir("downstream")} sx={outlineButton}>What depends on this?</Button>
         </Stack>
-        {impactDir && impact.isLoading && <CircularProgress size={18} sx={{ mt: 1.5 }} />}
+        {impactDir && impact.isLoading && (
+          <Stack role="status" aria-label="Computing impact" spacing={0.75} sx={{ mt: 1.5 }}>
+            <Skeleton variant="rounded" height={24} />
+            <Skeleton variant="rounded" height={24} />
+            <Skeleton variant="rounded" height={24} />
+          </Stack>
+        )}
         {impact.isError && (
           <Alert severity="error" sx={{ mt: 1.5 }} action={<Button size="small" color="inherit" onClick={() => void impact.refetch()}>Retry</Button>}>
-            {errorMessage(impact.error)}
+            <AlertTitle>{IMPACT_ERROR_TITLE}</AlertTitle>
+            {errorMessage(impact.error) === "Something went wrong" ? IMPACT_ERROR_FALLBACK : errorMessage(impact.error)}
           </Alert>
         )}
-        {impact.data && (
+        {impact.data && impactDir && (
           <Box sx={{ mt: 1.5 }}>
             {impact.data.caveats.filter((c) => c.code !== "truncated").map((c) => (
               <Alert key={c.code} severity={c.code === "scope" || c.code === "heuristic" ? "info" : "warning"} sx={{ mb: 1, fontSize: 12 }}>{c.message}</Alert>
             ))}
             {impact.data.nodes.length === 0 ? (
-              <Typography sx={{ fontSize: 13, color: "text.secondary" }}>No dependencies found in the currently-scanned data.</Typography>
+              <Alert severity="info">
+                <AlertTitle>{IMPACT_EMPTY.title}</AlertTitle>
+                {IMPACT_EMPTY.message}
+              </Alert>
             ) : (
               <>
-                <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ mb: 1 }}>
-                  {impact.data.summary.map((s) => (
-                    <Chip key={s.typeKey} size="small" variant="outlined" label={`${s.count} ${s.count === 1 ? s.kindLabel : pluralizeTypeLabel(s.kindLabel)}`} />
-                  ))}
-                </Stack>
+                {impactTypeBreakdown(impact.data.nodes).length > 0 && (
+                  <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ mb: 1 }}>
+                    {impactTypeBreakdown(impact.data.nodes).map((s) => (
+                      <Chip key={s.typeKey} size="small" variant="outlined" label={`${s.count} ${s.label}`} />
+                    ))}
+                  </Stack>
+                )}
                 {impact.data.truncated && <Typography sx={{ fontSize: 11.5, color: "text.secondary", mb: 1 }}>The result was capped; focus on a narrower component to see everything.</Typography>}
                 <Box sx={{ maxHeight: 260, overflow: "auto" }}>
                   <Box component="table" sx={{ borderCollapse: "collapse", width: "100%" }}>
-                    <TableHead cols={["Affected", "Type", "Hops", ""]} />
+                    <TableHead cols={[impactColumnHeader(impactDir), "Type", "Hops", ""]} />
                     <Box component="tbody">
                       {impact.data.nodes.map((n) => (
-                        <Box component="tr" key={n.nodeKey} onClick={() => onSelectNode(n.nodeKey)} sx={{ cursor: "pointer", "&:hover": { bgcolor: "action.hover" } }}>
+                        <Box component="tr" key={n.nodeKey} tabIndex={0} onClick={() => onSelectNode(n.nodeKey)} onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onSelectNode(n.nodeKey))} sx={{ cursor: "pointer", "&:hover": { bgcolor: "action.hover" }, "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main", outlineOffset: -2 } }}>
                           <Box component="td" sx={cell}>{n.label}</Box>
                           <Box component="td" sx={cell}>{n.kindLabel}</Box>
                           <Box component="td" sx={cell}>{n.distance}</Box>
@@ -515,12 +576,10 @@ function PanelBody({ api, connectionId, nodeKey, view, workingNodes, highlighted
         )}
       </Section>
 
-      <Section id="technical" title="Technical Details" icon={<TuneOutlined />} open={open.technical} onToggle={onToggle}>
-        <Button size="small" onClick={() => setShowTech((v) => !v)} sx={{ ml: -0.5, ...outlineButton }}>{showTech ? "Hide technical details" : "Show technical details"}</Button>
-        {showTech &&
-          (technical.length === 0 ? (
-            <Typography sx={{ fontSize: 13, color: "text.secondary", mt: 0.5 }}>No additional attributes.</Typography>
-          ) : (
+      {technical.length > 0 && (
+        <Section id="technical" title="Technical Details" icon={<TuneOutlined />} open={open.technical} onToggle={onToggle}>
+          <Button size="small" onClick={() => setShowTech((v) => !v)} sx={{ ml: -0.5, ...outlineButton }}>{showTech ? "Hide technical details" : "Show technical details"}</Button>
+          {showTech && (
             <Box component="table" sx={{ borderCollapse: "collapse", width: "100%", mt: 0.5 }}>
               <Box component="tbody">
                 {technical.map(([k, v]) => (
@@ -531,15 +590,30 @@ function PanelBody({ api, connectionId, nodeKey, view, workingNodes, highlighted
                 ))}
               </Box>
             </Box>
-          ))}
-      </Section>
+          )}
+        </Section>
+      )}
 
       <Box sx={{ borderTop: "1px solid", borderColor: "divider", px: 1.5, py: 1.25 }}>
         <Typography sx={{ fontSize: 11.5, color: "text.secondary" }}>
-          {intelligence.data?.lastScannedAt ? `Metadata intelligence last scanned ${new Date(intelligence.data.lastScannedAt).toLocaleString()}` : intelligence.data ? "Never scanned — run a scan to build metadata intelligence." : " "}
+          {intelligence.data?.lastScannedAt ? `Metadata intelligence last scanned ${new Date(intelligence.data.lastScannedAt).toLocaleString()}` : intelligence.data ? "Never scanned — run a scan to build metadata intelligence." : " "}
           {intelligence.data?.hasCoverageLimitations && <Box component="span" sx={{ color: "warning.main" }}> · Some dependency types were not fully scanned</Box>}
         </Typography>
       </Box>
+
+      {drilldown && (
+        <IntelligenceDrilldown
+          api={api}
+          connectionId={connectionId}
+          selection={drilldown}
+          onClose={() => setDrilldown(null)}
+          onShowOnGraph={(row: ConnectionRow) => {
+            setDrilldown(null);
+            (onShowOnGraph ?? onSelectNode)(row.nodeKey);
+          }}
+          onOpenSetup={openSetup ? (row: ConnectionRow) => openSetup(rowSetupRef(row)) : undefined}
+        />
+      )}
     </Box>
   );
 }
@@ -553,7 +627,7 @@ function CountRow({ label, value, onClick }: { label: string; value: number; onC
     </>
   );
   return onClick ? (
-    <Box component="button" type="button" onClick={onClick} sx={{ all: "unset", boxSizing: "border-box", width: "100%", display: "flex", alignItems: "center", gap: 1, py: 0.25, cursor: "pointer", "&:hover": { bgcolor: "action.hover" }, "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main" } }}>
+    <Box component="button" type="button" title={GROUP_DRILL_TITLE} onClick={onClick} sx={{ all: "unset", boxSizing: "border-box", width: "100%", display: "flex", alignItems: "center", gap: 1, py: 0.25, cursor: "pointer", "&:hover": { bgcolor: "action.hover" }, "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main" } }}>
       {content}
     </Box>
   ) : (
@@ -561,25 +635,14 @@ function CountRow({ label, value, onClick }: { label: string; value: number; onC
   );
 }
 
-function FieldRelationshipSection({ node, data, open, onToggle }: { node: GraphNode; data: NodeDetail; open: boolean; onToggle: (id: SectionId) => void }) {
-  const link = data.edges.find((e) => e.direction === "out" && (e.typeKey.endsWith("LOOKUP_TO") || e.typeKey.endsWith("MASTER_DETAIL_TO")));
-  const relName = typeof node.attributes?.relationshipName === "string" && node.attributes.relationshipName ? node.attributes.relationshipName : "—";
-  return (
-    <Section id="fieldRelationship" title="Field Relationship" icon={<HubOutlined />} open={open} onToggle={onToggle}>
-      <KeyValueGrid rows={[["Relationship Type", link ? (link.typeKey.endsWith("MASTER_DETAIL_TO") ? "Master-Detail" : "Lookup") : "—"], ["Target Object", link?.other.label ?? "—"], ["Relationship Name", relName]]} />
-    </Section>
-  );
-}
-
 type FieldsQuery = ReturnType<typeof useQuery<import("./graphApi").ObjectFields>>;
 
-function FieldsBody({ fields, apiName, show, onShow, fieldNodeByFqn, onSelectNode, hint }: { fields: FieldsQuery; apiName: string; show: boolean; onShow: (v: boolean) => void; fieldNodeByFqn: Map<string, GraphNode>; onSelectNode: (key: string) => void; hint: (n: number) => string | null }) {
+function FieldsBody({ fields, totals, show, onShow, onSelectNode }: { fields: FieldsQuery; totals: FieldTotals; show: boolean; onShow: (v: boolean) => void; onSelectNode: (key: string) => void }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<FieldFilter>("all");
   const all = fields.data?.fields;
-  const metrics = all ? fieldMetrics(all) : null;
-  const tiles: Array<[string, number | undefined]> = [["Total", metrics?.total], ["Standard", metrics?.standard], ["Custom", metrics?.custom], ["Relationship", metrics?.relationship]];
-  const shown = all ? filterFields(all, query, filter) : [];
+  const tiles: Array<[string, number | null]> = [["Total", totals.total], ["Standard", totals.standard], ["Custom", totals.custom], ["Relationship", totals.relationship]];
+  const shown = useMemo(() => (all ? sortFieldsByLabel(filterFields(all, query, filter)) : []), [all, query, filter]);
   return (
     <Stack spacing={1.25}>
       <Box sx={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 0.75 }}>
@@ -598,16 +661,20 @@ function FieldsBody({ fields, apiName, show, onShow, fieldNodeByFqn, onSelectNod
           <CircularProgress size={18} />
         ) : fields.isError ? (
           <Alert severity="error" action={<Button size="small" color="inherit" onClick={() => void fields.refetch()}>Retry</Button>}>
-            {errorMessage(fields.error)}
+            <AlertTitle>{FIELDS_ERROR_TITLE}</AlertTitle>
+            {errorMessage(fields.error) === "Something went wrong" ? FIELDS_ERROR_FALLBACK : errorMessage(fields.error)}
           </Alert>
         ) : !all || all.length === 0 ? (
-          <Typography sx={{ fontSize: 13, color: "text.secondary" }}>No fields</Typography>
+          <Alert severity="info">
+            <AlertTitle>{FIELDS_EMPTY.title}</AlertTitle>
+            {FIELDS_EMPTY.message}
+          </Alert>
         ) : (
           <>
             <Stack direction="row" spacing={1} alignItems="center">
               <TextField
                 size="small"
-                placeholder="Search fields…"
+                placeholder="Search fields..."
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 inputProps={{ "aria-label": "Search fields" }}
@@ -620,28 +687,26 @@ function FieldsBody({ fields, apiName, show, onShow, fieldNodeByFqn, onSelectNod
                 ))}
               </ToggleButtonGroup>
             </Stack>
-            {hint(shown.length) ? (
-              <Alert severity="info" sx={{ fontSize: 12 }}>{hint(shown.length)}</Alert>
+            {shown.length === 0 ? (
+              <Alert severity="info" sx={{ fontSize: 12 }}>
+                <AlertTitle>{FIELDS_NO_MATCH.title}</AlertTitle>
+                {FIELDS_NO_MATCH.message}
+              </Alert>
             ) : (
               <Box sx={{ maxHeight: 280, overflow: "auto" }}>
                 <Box component="table" sx={{ borderCollapse: "collapse", width: "100%" }}>
-                  <TableHead cols={["Field", "API Name", "Type", ""]} />
+                  <TableHead cols={["Field", "API Name", "Data Type", ""]} />
                   <Box component="tbody">
                     {shown.map((f) => {
-                      const target = fieldNodeByFqn.get(`${apiName}.${f.name}`);
+                      const key = f.nodeKey ?? null;
+                      const rowProps = key
+                        ? { role: "button", tabIndex: 0, onClick: () => onSelectNode(key), onKeyDown: (e: React.KeyboardEvent) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onSelectNode(key)) }
+                        : {};
                       return (
-                        <Box component="tr" key={f.name}>
-                          <Box component="td" sx={cell}>
-                            {target ? (
-                              <Box component="button" type="button" onClick={() => onSelectNode(target.nodeKey)} sx={{ all: "unset", cursor: "pointer", color: "primary.main", fontSize: 12, "&:hover": { textDecoration: "underline" } }}>
-                                {f.label}
-                              </Box>
-                            ) : (
-                              f.label
-                            )}
-                          </Box>
+                        <Box component="tr" key={f.name} title={fieldRowTitle(key)} {...rowProps} sx={key ? { cursor: "pointer", "&:hover": { bgcolor: "action.hover" }, "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main", outlineOffset: -2 } } : undefined}>
+                          <Box component="td" sx={{ ...cell, ...(key ? { color: "primary.main" } : {}) }}>{f.label}</Box>
                           <Box component="td" sx={{ ...cell, ...mono, wordBreak: "break-all" }}>{f.name}</Box>
-                          <Box component="td" sx={cell}>{f.type}</Box>
+                          <Box component="td" sx={cell}>{f.type || "—"}</Box>
                           <Box component="td" sx={cell}><Badge label={f.custom ? "Custom" : "Standard"} color={f.custom ? "#5E35B1" : "#5E6878"} /></Box>
                         </Box>
                       );

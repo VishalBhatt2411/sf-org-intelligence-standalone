@@ -20,7 +20,9 @@ app.use(cors({ origin: process.env.FRONTEND_URL, credentials: true }));
 app.use(express.json());
 app.use(cookieParser());
 
-const apiLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 300, standardHeaders: true, legacyHeaders: false });
+// The Graph Explorer fans out many small reads per interaction, so 300 per 15 minutes is too tight for a
+// single user; the stricter figure stays for production, development is effectively unthrottled.
+const apiLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: process.env.NODE_ENV === "production" ? 1500 : 20000, standardHeaders: true, legacyHeaders: false });
 app.use(apiLimiter);
 
 app.use("/auth", authRouter);

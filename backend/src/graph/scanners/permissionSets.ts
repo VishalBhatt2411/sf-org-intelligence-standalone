@@ -33,9 +33,22 @@ const namespaceFromSetName = (name: string): string | null => (name.includes("__
 // supplied sets (not custom) need the explicit setting; the rest follow the namespace rule.
 // A set with no live metadata row is treated as a custom one, with the namespace read from its name.
 export function isPermissionSetInScope(name: string, meta: PermissionSetMeta | undefined, options: PermissionScopeOptions): boolean {
+  if (meta?.isOwnedByProfile) return false;
   if (meta?.type === "Group") return false;
   if (meta && !meta.isCustom && !options.settings.scanStandardPermissionSets) return false;
   return isNamespaceInScope(meta ? meta.namespace || null : namespaceFromSetName(name), options);
+}
+
+// The PermissionSet sObject names a packaged set "Name" + NamespacePrefix; the Metadata API listing
+// calls it "ns__Name". Both spellings index the same row.
+export function permissionSetMetaIndex(rows: PermissionSetMeta[]): Map<string, PermissionSetMeta> {
+  const out = new Map<string, PermissionSetMeta>();
+  for (const row of rows) {
+    if (row.isOwnedByProfile) continue;
+    out.set(row.name, row);
+    if (row.namespace) out.set(`${row.namespace}__${row.name}`, row);
+  }
+  return out;
 }
 
 // Permission sets: one node each, GRANTS_ACCESS_TO the objects they give any CRUD/view-all access to
@@ -53,11 +66,19 @@ export function scanPermissionSets(
     const meta = metaByName.get(set.name);
     if (!isPermissionSetInScope(set.name, meta, options)) continue;
 
+    // Native fqn: "ns.Name" for a packaged set (the Metadata API's "ns__Name" re-spelled).
+    const namespace = meta ? meta.namespace || null : namespaceFromSetName(set.name);
+    const bareName = meta?.name ?? (namespace ? set.name.slice(namespace.length + 2) : set.name);
     const { key, draft } = nodeDraft("PermissionSet", {
-      fqn: set.name,
+      fqn: namespace ? `${namespace}.${bareName}` : set.name,
       label: meta?.label || set.name,
-      namespace: meta ? meta.namespace || null : undefined,
-      attributes: { label: meta?.label ?? set.name, isCustom: meta?.isCustom ?? true },
+      namespace: meta || namespace ? namespace : undefined,
+      attributes: {
+        label: meta?.label ?? set.name,
+        description: meta?.description ?? null,
+        isCustom: meta?.isCustom ?? true,
+        license: meta?.license ?? null,
+      },
     });
     out.nodes.push(draft);
     if (set.sfId) out.ids.push([set.sfId, key]);

@@ -1,7 +1,8 @@
 import { dedupeEdges, edgeDraft, keyOf, nodeDraft } from "../draft";
 import type { ObjectIndex } from "../objectIndex";
+import { isNamespaceInScope, type ScopeOptions } from "../scope";
 import { emptyOutput, type ScannerOutput } from "../types";
-import type { ApexClassInput, ApexTriggerInput } from "./inputs";
+import type { ApexClassInput, ApexMeta, ApexTriggerInput } from "./inputs";
 
 // Comments and string literals are blanked before tokenising, in one alternation so whichever
 // construct opens first is consumed first. That ordering is what keeps "http://x" (a // inside a
@@ -35,28 +36,72 @@ export function referencedNames(body: string, known: ReadonlyMap<string, string>
   return [...found];
 }
 
-// lower-cased class name -> node key, the lookup both scanners use to turn a token into an edge target.
+// Native identity: a packaged unit is "ns.Name" in namespace ns; a local one is just its name.
+export function apexIdentity(name: string, meta: ApexMeta | undefined): { fqn: string; namespace: string | null } {
+  const namespace = meta?.namespace || null;
+  return { fqn: namespace ? `${namespace}.${name}` : name, namespace };
+}
+
+export function apexClassKey(apexClass: ApexClassInput): string {
+  const { fqn, namespace } = apexIdentity(apexClass.name, apexClass.meta);
+  return keyOf("ApexClass", fqn, namespace);
+}
+
+// The native attribute set, plus the standalone's line count.
+function apexAttributes(meta: ApexMeta | undefined, apiVersion: number | null | undefined): Record<string, unknown> {
+  return {
+    apiVersion: meta?.apiVersion ?? apiVersion ?? null,
+    status: meta?.status ?? null,
+    isValid: meta?.isValid ?? null,
+    lengthWithoutComments: meta?.lengthWithoutComments ?? null,
+    bodyCrc: meta?.bodyCrc ?? null,
+  };
+}
+
+const inScope = (meta: ApexMeta | undefined, options?: ScopeOptions) => !options || isNamespaceInScope(meta?.namespace ?? null, options);
+
+// Lower-cased class name -> node key, the lookup both scanners (and permission-set grants) use to turn
+// a token into an edge target. Packaged classes answer to "ns.name" and "ns__name"; a bare name means
+// the local class when there is one, else the only packaged class of that name.
 export function classKeyIndex(classes: ApexClassInput[]): Map<string, string> {
-  return new Map(classes.map((c) => [c.name.toLowerCase(), keyOf("ApexClass", c.name)]));
+  const out = new Map<string, string>();
+  const packaged = classes.filter((c) => c.meta?.namespace);
+  const local = classes.filter((c) => !c.meta?.namespace);
+  for (const c of packaged) {
+    const key = apexClassKey(c);
+    const ns = c.meta!.namespace!.toLowerCase();
+    const name = c.name.toLowerCase();
+    out.set(`${ns}.${name}`, key);
+    out.set(`${ns}__${name}`, key);
+    if (!out.has(name)) out.set(name, key);
+  }
+  for (const c of local) out.set(c.name.toLowerCase(), apexClassKey(c));
+  return out;
 }
 
 // Classes: one node each, plus a REFERENCES edge to every other class named in the (comment- and
 // string-free) body. The edge is a heuristic: dynamic Apex (Type.forName) and interface
 // indirection are invisible to a name match, which is why it carries "heuristic" confidence and the
 // precise class-to-class dependency comes from the dependency stage instead.
-export function scanApexClasses(classes: ApexClassInput[]): ScannerOutput {
+// A class of another package is skipped unless managed packages are scanned (native isComponentInScope);
+// a class whose source is hidden is still a node, it just has no REFERENCES of its own.
+export function scanApexClasses(classes: ApexClassInput[], options?: ScopeOptions): ScannerOutput {
   const out = emptyOutput();
-  const known = classKeyIndex(classes);
-  for (const apexClass of classes) {
+  const scoped = classes.filter((c) => inScope(c.meta, options));
+  const known = classKeyIndex(scoped);
+  for (const apexClass of scoped) {
+    const { fqn, namespace } = apexIdentity(apexClass.name, apexClass.meta);
     const { key, draft } = nodeDraft("ApexClass", {
-      fqn: apexClass.name,
+      fqn,
       label: apexClass.name,
-      attributes: { lineCount: apexClass.lineCount, apiVersion: apexClass.apiVersion ?? null },
+      namespace,
+      attributes: { lineCount: apexClass.lineCount, ...apexAttributes(apexClass.meta, apexClass.apiVersion) },
     });
     out.nodes.push(draft);
     if (apexClass.sfId) out.ids.push([apexClass.sfId, key]);
     for (const name of referencedNames(apexClass.body, known, apexClass.name)) {
-      out.edges.push(edgeDraft("REFERENCES", key, known.get(name)!));
+      const target = known.get(name)!;
+      if (target !== key) out.edges.push(edgeDraft("REFERENCES", key, target));
     }
   }
   out.edges = dedupeEdges(out.edges);
@@ -81,19 +126,22 @@ export function parseTriggerHeader(body: string): TriggerHeader | null {
 // call. The object comes from the declaration in the body ("parsed" confidence) and falls back to
 // TableEnumOrId ("exact": it is the platform's own record of the object). A trigger whose object is
 // not an in-scope object (a Platform Event trigger, say) gets no EXECUTES_ON edge rather than a guess.
-export function scanApexTriggers(triggers: ApexTriggerInput[], classes: ApexClassInput[], index: ObjectIndex): ScannerOutput {
+export function scanApexTriggers(triggers: ApexTriggerInput[], classes: ApexClassInput[], index: ObjectIndex, options?: ScopeOptions): ScannerOutput {
   const out = emptyOutput();
-  const known = classKeyIndex(classes);
+  const known = classKeyIndex(classes.filter((c) => inScope(c.meta, options)));
   for (const trigger of triggers) {
+    if (!inScope(trigger.meta, options)) continue;
     const header = parseTriggerHeader(trigger.body);
     const parsed = header ? index.resolve(header.objectName) : null;
     const target = parsed ?? index.resolve(trigger.objectName);
     const events = header?.events ?? [];
 
+    const { fqn, namespace } = apexIdentity(trigger.name, trigger.meta);
     const { key, draft } = nodeDraft("ApexTrigger", {
-      fqn: trigger.name,
+      fqn,
       label: trigger.name,
-      attributes: { objectApiName: target?.name ?? null, triggerEvents: events },
+      namespace,
+      attributes: { objectApiName: target?.name ?? null, triggerEvents: events, ...apexAttributes(trigger.meta, null) },
     });
     out.nodes.push(draft);
     if (trigger.sfId) out.ids.push([trigger.sfId, key]);

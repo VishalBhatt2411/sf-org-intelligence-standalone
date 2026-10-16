@@ -1,11 +1,19 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Box, IconButton, ListItemText, Menu, MenuItem, Tooltip, Typography } from "@mui/material";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Box, Divider, IconButton, ListItemText, Menu, MenuItem, Tooltip, Typography } from "@mui/material";
 import AddRoundedIcon from "@mui/icons-material/AddRounded";
 import RemoveRoundedIcon from "@mui/icons-material/RemoveRounded";
 import CenterFocusStrongRoundedIcon from "@mui/icons-material/CenterFocusStrongRounded";
+import MyLocationRoundedIcon from "@mui/icons-material/MyLocationRounded";
+import RestartAltRoundedIcon from "@mui/icons-material/RestartAltRounded";
+import SettingsBackupRestoreRoundedIcon from "@mui/icons-material/SettingsBackupRestoreRounded";
+import FileDownloadRoundedIcon from "@mui/icons-material/FileDownloadRounded";
+import OpenInNewRoundedIcon from "@mui/icons-material/OpenInNewRounded";
+import FullscreenRoundedIcon from "@mui/icons-material/FullscreenRounded";
+import FullscreenExitRoundedIcon from "@mui/icons-material/FullscreenExitRounded";
 import type { ImpactDirection } from "./graphApi";
 import type { RenderEdge, RenderNode } from "./clustering";
-import { NODE_H, NODE_W, layoutLanes, layoutRadial, nearestInDirection, type Bounds, type Direction, type LaneSide, type Point } from "./layout";
+import { applyOffsets, centerOn, dragOffset, fitView, passedThreshold, resetView, standaloneSvg, zoomAround, zoomPercent, type View } from "./canvasView";
+import { NODE_H, NODE_W, boundsOf, layoutLanes, layoutRadial, nearestInDirection, type Direction, type LaneSide, type Point } from "./layout";
 import { DASH, canvasTokens, clusterStyle, edgeOpacity, humanizeKind, kindStyle, truncate } from "./nodeStyle";
 
 export type CanvasLayout = "lanes" | "radial";
@@ -34,21 +42,18 @@ type Props = {
   onOpenCluster: (id: string) => void;
   onCopy: (text: string) => void;
   onBackgroundClick: () => void;
+  // Nodes to emphasise ("Highlight on Graph"); everything else is dimmed. Null or absent: nothing dimmed.
+  highlightKeys?: ReadonlySet<string> | null;
+  // Opens a node in Salesforce Setup; absent hides the menu entry and toolbar button.
+  onOpenInSalesforce?: (key: string) => void;
+  // Exported SVG file name.
+  exportName?: string;
+  // Overlays drawn over the canvas (filter panel, banners); they follow the canvas into maximised view.
+  children?: ReactNode;
 };
 
-type View = { x: number; y: number; k: number };
-const MIN_K = 0.15;
-const MAX_K = 2.5;
 const MINI_W = 190;
 const MINI_H = 120;
-const clampK = (k: number) => Math.min(MAX_K, Math.max(MIN_K, k));
-
-function fitView(bounds: Bounds, width: number, height: number): View {
-  const w = Math.max(1, bounds.maxX - bounds.minX);
-  const h = Math.max(1, bounds.maxY - bounds.minY);
-  const k = clampK(Math.min((width - 80) / w, (height - 80) / h, 1));
-  return { k, x: width / 2 - ((bounds.minX + bounds.maxX) / 2) * k, y: height / 2 - ((bounds.minY + bounds.maxY) / 2) * k };
-}
 
 // Where a line from `from` to `to` leaves the card around `from`.
 function borderPoint(from: Point, to: Point): Point {
@@ -59,10 +64,27 @@ function borderPoint(from: Point, to: Point): Point {
   return { x: from.x + dx * scale, y: from.y + dy * scale };
 }
 
+// Maximise lifts the canvas into a full-window layer; Escape brings it back.
 export function GraphCanvas(props: Props) {
-  const { nodes, edges, rootKey, layout, force, selectedKey, expandedKeys, loadingKeys, cycleKeys, allowExpand, dark, fitToken } = props;
+  const [maximized, setMaximized] = useState(false);
+  useEffect(() => {
+    if (!maximized) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setMaximized(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [maximized]);
+  return (
+    <Box sx={maximized ? { position: "fixed", inset: 0, zIndex: (th) => th.zIndex.modal, bgcolor: "background.default", display: "flex", flexDirection: "column" } : { display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, minWidth: 0 }}>
+      <CanvasInner {...props} maximized={maximized} onToggleMaximize={() => setMaximized((m) => !m)} />
+    </Box>
+  );
+}
+
+function CanvasInner(props: Props & { maximized: boolean; onToggleMaximize: () => void }) {
+  const { nodes, edges, rootKey, layout, force, selectedKey, expandedKeys, loadingKeys, cycleKeys, allowExpand, dark, fitToken, highlightKeys, maximized } = props;
   const tokens = canvasTokens(dark);
   const containerRef = useRef<HTMLDivElement>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
   const [size, setSize] = useState({ width: 800, height: 520 });
   const [measured, setMeasured] = useState(false);
   const [view, setView] = useState<View>({ x: 0, y: 0, k: 1 });
@@ -70,11 +92,19 @@ export function GraphCanvas(props: Props) {
   const [hover, setHover] = useState<string | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; key: string } | null>(null);
   const drag = useRef<{ x: number; y: number; moved: boolean } | null>(null);
+  // A press on a card that travels past the threshold moves that card instead of selecting it.
+  const nodeDrag = useRef<{ key: string; x: number; y: number; moved: boolean } | null>(null);
+  const suppressClick = useRef(false);
+  // Manual placements from node drags, on top of the computed layout. Cleared by "Reset layout" and on a new focus.
+  const [offsets, setOffsets] = useState<ReadonlyMap<string, Point>>(new Map());
+  useEffect(() => setOffsets(new Map()), [rootKey]);
 
-  const { positions, bounds } = useMemo(() => {
+  const laidOut = useMemo(() => {
     const layoutNodes = nodes.map((n) => ({ key: n.key, ring: n.ring, sort: n.label.toLowerCase() }));
     return layout === "radial" ? layoutRadial(rootKey, layoutNodes, edges) : layoutLanes(rootKey, layoutNodes, edges, force);
   }, [nodes, edges, rootKey, layout, force]);
+  const positions = useMemo(() => applyOffsets(laidOut.positions, offsets), [laidOut, offsets]);
+  const bounds = useMemo(() => (offsets.size ? boundsOf(positions) : laidOut.bounds), [offsets, positions, laidOut]);
   const byKey = useMemo(() => new Map(nodes.map((n) => [n.key, n])), [nodes]);
 
   useLayoutEffect(() => {
@@ -100,12 +130,39 @@ export function GraphCanvas(props: Props) {
     fit();
   }, [fitToken, positions, fit, measured]);
 
-  const zoomAt = useCallback((factor: number, cx: number, cy: number) => {
-    setView((v) => {
-      const k = clampK(v.k * factor);
-      return { k, x: cx - ((cx - v.x) / v.k) * k, y: cy - ((cy - v.y) / v.k) * k };
-    });
-  }, []);
+  // Maximise changes the pane size, so the picture is re-fitted to it.
+  const sizedFor = useRef(maximized);
+  useEffect(() => {
+    if (sizedFor.current === maximized || !measured) return;
+    sizedFor.current = maximized;
+    fit();
+  }, [maximized, size.width, size.height, measured, fit]);
+
+  const zoomAt = useCallback((factor: number, cx: number, cy: number) => setView((v) => zoomAround(v, factor, cx, cy)), []);
+
+  const centerSelected = () => {
+    const p = positions.get(selectedKey ?? rootKey);
+    if (p) setView((v) => centerOn(v, p, size.width, size.height));
+  };
+
+  const exportSvg = () => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const clone = svg.cloneNode(true) as SVGSVGElement;
+    clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+    clone.setAttribute("width", String(size.width));
+    clone.setAttribute("height", String(size.height));
+    clone.setAttribute("style", `background:${tokens.background}`);
+    const blob = new Blob([standaloneSvg(new XMLSerializer().serializeToString(clone))], { type: "image/svg+xml" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = props.exportName ?? "graph.svg";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  };
 
   // Wheel zoom needs a non-passive listener so the page does not scroll underneath.
   useEffect(() => {
@@ -145,6 +202,10 @@ export function GraphCanvas(props: Props) {
   );
 
   const activate = (key: string) => {
+    if (suppressClick.current) {
+      suppressClick.current = false;
+      return;
+    }
     const n = byKey.get(key);
     if (!n) return;
     setCursor(key);
@@ -205,26 +266,49 @@ export function GraphCanvas(props: Props) {
   }, [edges, hover, selectedKey]);
 
   // Pan by dragging the background; a drag that never moved counts as a click that clears the selection.
+  // Dragging a card moves just that card (native node drag); the click that ends the drag does not select.
   const onPointerDown = (e: React.PointerEvent) => {
-    if (e.button !== 0 || (e.target as Element).closest("[data-card]")) return;
+    if (e.button !== 0) return;
+    suppressClick.current = false;
+    const card = (e.target as Element).closest("[data-card]");
+    if (card) {
+      const key = card.getAttribute("data-key");
+      if (key && !(e.target as Element).closest("[data-toggle]")) nodeDrag.current = { key, x: e.clientX, y: e.clientY, moved: false };
+      return;
+    }
     drag.current = { x: e.clientX, y: e.clientY, moved: false };
     (e.currentTarget as Element).setPointerCapture(e.pointerId);
   };
   const onPointerMove = (e: React.PointerEvent) => {
+    const n = nodeDrag.current;
+    if (n) {
+      const dx = e.clientX - n.x;
+      const dy = e.clientY - n.y;
+      if (!n.moved && !passedThreshold(dx, dy)) return;
+      n.moved = true;
+      n.x = e.clientX;
+      n.y = e.clientY;
+      const k = view.k;
+      setOffsets((o) => dragOffset(o, n.key, dx, dy, k));
+      return;
+    }
     const d = drag.current;
     if (!d) return;
     const dx = e.clientX - d.x;
     const dy = e.clientY - d.y;
-    if (!d.moved && Math.hypot(dx, dy) < 4) return;
+    if (!d.moved && !passedThreshold(dx, dy)) return;
     d.moved = true;
     d.x = e.clientX;
     d.y = e.clientY;
     setView((v) => ({ ...v, x: v.x + dx, y: v.y + dy }));
   };
   const onPointerUp = () => {
+    if (nodeDrag.current?.moved) suppressClick.current = true;
+    nodeDrag.current = null;
     if (drag.current && !drag.current.moved) props.onBackgroundClick();
     drag.current = null;
   };
+  const dim = (key: string) => Boolean(highlightKeys) && !highlightKeys!.has(key);
 
   const menuNode = menu ? byKey.get(menu.key) : undefined;
   const closeMenu = () => setMenu(null);
@@ -267,7 +351,7 @@ export function GraphCanvas(props: Props) {
       onContextMenu={(e) => e.preventDefault()}
       sx={{ position: "relative", flexGrow: 1, minHeight: 0, overflow: "hidden", bgcolor: tokens.background, outline: "none", touchAction: "none", cursor: drag.current?.moved ? "grabbing" : "grab", "&:focus-visible": { boxShadow: `inset 0 0 0 2px ${tokens.selection}` } }}
     >
-      <svg width={size.width} height={size.height} style={{ display: "block" }}>
+      <svg ref={svgRef} width={size.width} height={size.height} style={{ display: "block" }}>
         <defs>
           <pattern id="oi-grid" width={24 * view.k} height={24 * view.k} patternUnits="userSpaceOnUse" x={view.x} y={view.y}>
             <circle cx={1} cy={1} r={1} fill={tokens.grid} />
@@ -293,8 +377,9 @@ export function GraphCanvas(props: Props) {
               ? `M${p1.x} ${p1.y} C${(p1.x + p2.x) / 2} ${p1.y} ${(p1.x + p2.x) / 2} ${p2.y} ${p2.x} ${p2.y}`
               : `M${p1.x} ${p1.y} L${p2.x} ${p2.y}`;
             const label = `${humanizeKind(edge.kind)}${edge.viaField ? ` via ${edge.viaField}` : ""}${edge.count > 1 ? ` ×${edge.count}` : ""}`;
+            const faded = dim(edge.source) || dim(edge.target);
             return (
-              <g key={edge.key} opacity={active ? 1 : edgeOpacity(edge.confidence)}>
+              <g key={edge.key} opacity={faded ? 0.12 : active ? 1 : edgeOpacity(edge.confidence)}>
                 <path
                   d={d}
                   fill="none"
@@ -330,7 +415,9 @@ export function GraphCanvas(props: Props) {
               <g
                 key={n.key}
                 data-card
+                data-key={n.key}
                 transform={`translate(${p.x - NODE_W / 2} ${p.y - NODE_H / 2})`}
+                opacity={dim(n.key) ? 0.25 : 1}
                 style={{ cursor: "pointer" }}
                 onPointerEnter={() => setHover(n.key)}
                 onPointerLeave={() => setHover(null)}
@@ -359,6 +446,7 @@ export function GraphCanvas(props: Props) {
                 </text>
                 {allowExpand && !isCluster && (
                   <g
+                    data-toggle
                     onClick={(e) => {
                       e.stopPropagation();
                       props.onToggle(n.key);
@@ -383,26 +471,45 @@ export function GraphCanvas(props: Props) {
         </g>
       </svg>
 
-      <Box sx={{ position: "absolute", top: 12, right: 12, display: "flex", flexDirection: "column", gap: 0.5, bgcolor: tokens.overlay, border: `1px solid ${tokens.overlayBorder}`, borderRadius: 2, p: 0.25 }}>
-        <Tooltip title="Zoom in (+)" placement="left">
-          <IconButton size="small" onClick={() => zoomAt(1.25, size.width / 2, size.height / 2)} sx={{ color: tokens.text }} aria-label="Zoom in">
-            <AddRoundedIcon fontSize="small" />
-          </IconButton>
-        </Tooltip>
-        <Tooltip title="Zoom out (−)" placement="left">
-          <IconButton size="small" onClick={() => zoomAt(0.8, size.width / 2, size.height / 2)} sx={{ color: tokens.text }} aria-label="Zoom out">
-            <RemoveRoundedIcon fontSize="small" />
-          </IconButton>
-        </Tooltip>
-        <Tooltip title="Fit to screen (0)" placement="left">
-          <IconButton size="small" onClick={fit} sx={{ color: tokens.text }} aria-label="Fit to screen">
-            <CenterFocusStrongRoundedIcon fontSize="small" />
-          </IconButton>
-        </Tooltip>
+      <Box sx={{ position: "absolute", top: 12, right: 12, zIndex: 2, display: "flex", flexDirection: "column", alignItems: "center", gap: 0.25, bgcolor: tokens.overlay, border: `1px solid ${tokens.overlayBorder}`, borderRadius: 2, p: 0.25 }} onPointerDown={(e) => e.stopPropagation()}>
+        <ToolButton title="Zoom in (+)" onClick={() => zoomAt(1.25, size.width / 2, size.height / 2)} color={tokens.text}>
+          <AddRoundedIcon fontSize="small" />
+        </ToolButton>
+        <Typography variant="caption" aria-live="polite" aria-label={`Zoom ${zoomPercent(view.k)}`} sx={{ color: tokens.subtext, fontSize: 10.5, fontVariantNumeric: "tabular-nums", lineHeight: 1.2 }} data-id="canvas-zoom-readout">
+          {zoomPercent(view.k)}
+        </Typography>
+        <ToolButton title="Zoom out (−)" onClick={() => zoomAt(0.8, size.width / 2, size.height / 2)} color={tokens.text}>
+          <RemoveRoundedIcon fontSize="small" />
+        </ToolButton>
+        <Divider flexItem sx={{ borderColor: tokens.overlayBorder, my: 0.25 }} />
+        <ToolButton title="Fit to screen (0)" onClick={fit} color={tokens.text}>
+          <CenterFocusStrongRoundedIcon fontSize="small" />
+        </ToolButton>
+        <ToolButton title="Center on selected node" onClick={centerSelected} color={tokens.text}>
+          <MyLocationRoundedIcon fontSize="small" />
+        </ToolButton>
+        <ToolButton title="Reset layout (undo moved nodes)" onClick={() => setOffsets(new Map())} color={tokens.text} disabled={offsets.size === 0}>
+          <RestartAltRoundedIcon fontSize="small" />
+        </ToolButton>
+        <ToolButton title="Reset view (100%)" onClick={() => setView(resetView(size.width, size.height))} color={tokens.text}>
+          <SettingsBackupRestoreRoundedIcon fontSize="small" />
+        </ToolButton>
+        <Divider flexItem sx={{ borderColor: tokens.overlayBorder, my: 0.25 }} />
+        <ToolButton title="Export diagram as SVG" onClick={exportSvg} color={tokens.text}>
+          <FileDownloadRoundedIcon fontSize="small" />
+        </ToolButton>
+        {props.onOpenInSalesforce && (
+          <ToolButton title="Open selected in Salesforce" onClick={() => props.onOpenInSalesforce!(selectedKey && byKey.get(selectedKey)?.kind === "node" ? selectedKey : rootKey)} color={tokens.text}>
+            <OpenInNewRoundedIcon fontSize="small" />
+          </ToolButton>
+        )}
+        <ToolButton title={maximized ? "Exit full screen (Esc)" : "Maximize"} onClick={props.onToggleMaximize} color={tokens.text}>
+          {maximized ? <FullscreenExitRoundedIcon fontSize="small" /> : <FullscreenRoundedIcon fontSize="small" />}
+        </ToolButton>
       </Box>
 
       <Typography variant="caption" sx={{ position: "absolute", left: 12, bottom: 10, color: tokens.subtext, pointerEvents: "none" }}>
-        {nodes.length} nodes · {edges.length} links · {Math.round(view.k * 100)}%
+        {nodes.length} nodes · {edges.length} links · {zoomPercent(view.k)}
       </Typography>
 
       <Box sx={{ position: "absolute", right: 12, bottom: 12, bgcolor: tokens.overlay, border: `1px solid ${tokens.overlayBorder}`, borderRadius: 2, overflow: "hidden", display: { xs: "none", sm: "block" } }}>
@@ -443,12 +550,30 @@ export function GraphCanvas(props: Props) {
             <ListItemText>Impact: what this depends on</ListItemText>
           </MenuItem>
         )}
+        {menuNode?.kind === "node" && props.onOpenInSalesforce && (
+          <MenuItem onClick={run(() => props.onOpenInSalesforce!(menu!.key))}>
+            <ListItemText>Open in Salesforce</ListItemText>
+          </MenuItem>
+        )}
         {menuNode?.kind === "node" && (
           <MenuItem onClick={run(() => props.onCopy(menuNode.node!.fqn))}>
             <ListItemText>Copy API name</ListItemText>
           </MenuItem>
         )}
       </Menu>
+      {props.children}
     </Box>
+  );
+}
+
+function ToolButton({ title, onClick, color, disabled, children }: { title: string; onClick: () => void; color: string; disabled?: boolean; children: ReactNode }) {
+  return (
+    <Tooltip title={title} placement="left">
+      <span>
+        <IconButton size="small" onClick={onClick} disabled={disabled} sx={{ color }} aria-label={title}>
+          {children}
+        </IconButton>
+      </span>
+    </Tooltip>
   );
 }

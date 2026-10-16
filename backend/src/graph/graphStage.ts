@@ -4,13 +4,13 @@ import type { GraphRepository, RetireResult } from "./graphRepository";
 import type { GraphSource } from "./graphSource";
 import { edgeTypeKey, nodeTypeKey, type EdgeKind, type NodeKind } from "./nodeTypes";
 import { ObjectIndex, normaliseSfId } from "./objectIndex";
-import { isObjectInScope, isRelationshipFieldCandidate, type ScopeOptions } from "./scope";
+import { isFieldNamespaceInScope, isNamespaceInScope, isObjectInScope, isRelationshipFieldCandidate, type ScopeOptions } from "./scope";
 import { classKeyIndex, scanApexClasses, scanApexTriggers } from "./scanners/apex";
 import { scanDependencies } from "./scanners/dependencies";
-import { scanFlows } from "./scanners/flows";
-import type { PermissionSetMeta, StoredFieldInfo } from "./scanners/inputs";
+import { flowDefinitionIndex, scanFlows } from "./scanners/flows";
+import type { FlowDefinitionMeta, StoredFieldInfo, ValidationRuleInput } from "./scanners/inputs";
 import { scanApprovalProcesses, scanEmailAlerts, scanSharingRules, scanValidationRules, scanWorkflowRules } from "./scanners/objectRules";
-import { scanPermissionSets } from "./scanners/permissionSets";
+import { permissionSetMetaIndex, scanPermissionSets } from "./scanners/permissionSets";
 import { scanObjects, scanRelationshipFields } from "./scanners/structure";
 import type { GraphSettings } from "./settings";
 import type { Coverage, EdgeScope, ScannerOutput } from "./types";
@@ -97,10 +97,15 @@ export async function runGraphStage(deps: GraphStageDeps): Promise<GraphStageRes
   const inScope = stored.filter((o) => {
     const live = globalByName.get(o.apiName);
     if (!live) return false;
-    const customFieldCount = o.fields.filter((f) => f.apiName.endsWith("__c")).length;
+    // Managed fields of another package do not make a standard object "customized" (native rule).
+    const customFieldCount = o.fields.filter((f) => f.apiName.endsWith("__c") && isFieldNamespaceInScope(f.apiName, scope)).length;
     return isObjectInScope({ name: o.apiName, custom: live.custom, queryable: live.queryable, customFieldCount }, scope);
   });
   const index = new ObjectIndex(inScope.map((o) => ({ name: o.apiName, sfId: o.sfId })));
+  // Every stored object, in scope or not: a rule on an out-of-scope object keeps its node (no edge) and
+  // is named by this index.
+  const names = new ObjectIndex(stored.map((o) => ({ name: o.apiName, sfId: o.sfId })));
+  const fieldLabels = await inputs.fieldLabels().catch(() => new Map<string, string>());
 
   const session = new GraphBuildSession(deps.repository, deps.connectionId, deps.scanId);
   const idToKey = new Map<string, string>();
@@ -108,7 +113,30 @@ export async function runGraphStage(deps: GraphStageDeps): Promise<GraphStageRes
   const permissionOptions = { settings, orgNamespace };
 
   const stages: StageDef[] = [
-    { category: "objects", needs: ["objects"], run: async () => ({ output: scanObjects(inScope.map((o) => ({ apiName: o.apiName, label: o.label, sfId: o.sfId }))) }) },
+    { category: "objects", needs: ["objects"], run: async () => ({
+        output: scanObjects(
+          inScope.map((o) => {
+            const live = globalByName.get(o.apiName);
+            return {
+              apiName: o.apiName,
+              label: o.label,
+              sfId: o.sfId,
+              details: {
+                pluralLabel: live?.pluralLabel ?? null,
+                keyPrefix: live?.keyPrefix ?? null,
+                queryable: Boolean(live?.queryable),
+                createable: Boolean(live?.createable),
+                updateable: Boolean(live?.updateable),
+                deletable: Boolean(live?.deletable),
+                feedEnabled: Boolean(live?.feedEnabled),
+                fieldCount: o.fields.length,
+                customFieldCount: o.fields.filter((f) => f.apiName.endsWith("__c")).length,
+              },
+            };
+          })
+        ),
+      }),
+    },
     {
       category: "relationship_fields",
       needs: ["objects"],
@@ -119,28 +147,71 @@ export async function runGraphStage(deps: GraphStageDeps): Promise<GraphStageRes
         const idByField = new Map<string, string>();
         for (const o of inScope) for (const f of o.fields) if (f.sfId) idByField.set(`${o.apiName}.${f.apiName}`, f.sfId);
         const withIds = described.map((d) => ({ ...d, fields: d.fields.map((f) => ({ ...f, sfId: idByField.get(`${d.name}.${f.name}`) ?? null })) }));
-        const output = scanRelationshipFields(withIds, index);
+        const output = scanRelationshipFields(withIds, index, (name) => isFieldNamespaceInScope(name, scope));
         if (failed.length > 0) return { output, coverage: "partial", detail: `describe failed for ${failed.length} object(s)` };
         return { output };
       },
     },
-    { category: "apex_classes", needs: ["apex_classes"], run: async () => ({ output: scanApexClasses(await classes()) }) },
-    { category: "triggers", needs: ["triggers", "apex_classes"], run: async () => ({ output: scanApexTriggers(await inputs.triggers(), await classes(), index) }) },
-    { category: "flows", needs: ["flows"], run: async () => ({ output: scanFlows(await inputs.flows(), index) }) },
+    { category: "apex_classes", needs: ["apex_classes"], run: async () => ({ output: scanApexClasses(await classes(), scope) }) },
+    { category: "triggers", needs: ["triggers", "apex_classes"], run: async () => ({ output: scanApexTriggers(await inputs.triggers(), await classes(), index, scope) }) },
+    {
+      category: "flows",
+      needs: ["flows"],
+      run: async () => {
+        // FlowDefinitionView is the native source of the active flag, version and package state. It is an
+        // enrichment: without it the stored Metadata API definition still yields the node.
+        let definitions: ReadonlyMap<string, FlowDefinitionMeta> | undefined;
+        let note: string | null = null;
+        try {
+          definitions = flowDefinitionIndex(await source.flowDefinitions());
+        } catch (error) {
+          note = `flow definitions unavailable: ${message(error)}`;
+        }
+        return { output: scanFlows(await inputs.flows(), index, scope, definitions), detail: note };
+      },
+    },
     {
       category: "permission_sets",
       needs: ["permissions", "apex_classes"],
       run: async () => {
         const [sets, meta, list] = await Promise.all([inputs.permissionSets(), source.permissionSetMeta(), classes()]);
-        const metaByName = new Map<string, PermissionSetMeta>(meta.map((m) => [m.name, m]));
-        return { output: scanPermissionSets(sets, metaByName, index, classKeyIndex(list), permissionOptions) };
+        return { output: scanPermissionSets(sets, permissionSetMetaIndex(meta), index, classKeyIndex(list.filter((c) => isNamespaceInScope(c.meta?.namespace ?? null, scope))), permissionOptions) };
       },
     },
-    { category: "validation_rules", needs: [], run: async () => ({ output: scanValidationRules(await source.validationRules(), index, scope) }) },
-    { category: "workflow_rules", needs: ["workflow_rules"], run: async () => ({ output: scanWorkflowRules(await inputs.workflowRules(), index) }) },
-    { category: "email_alerts", needs: [], run: async () => ({ output: scanEmailAlerts(await source.emailAlerts(), index, scope) }) },
-    { category: "approval_processes", needs: [], run: async () => ({ output: scanApprovalProcesses(await source.approvalProcesses(), index, scope) }) },
-    { category: "sharing_rules", needs: ["sharing_rules", "sharing_model"], run: async () => ({ output: scanSharingRules(await inputs.sharingRules(), index) }) },
+    {
+      category: "validation_rules",
+      needs: [],
+      run: async () => {
+        const rules = await source.validationRules();
+        // Formulas need the Metadata API (one rule per Tooling query); only rules that will become nodes are read.
+        const fullName = (r: ValidationRuleInput, objectName: string) => `${objectName}.${r.namespace ? `${r.namespace}__` : ""}${r.name}`;
+        const wanted = rules.filter((r) => r.objectName && index.resolve(r.objectName) && isNamespaceInScope(r.namespace, scope));
+        let enriched: ValidationRuleInput[] = rules;
+        let note: string | null = null;
+        if (wanted.length > 0) {
+          try {
+            const details = await source.validationRuleDetails(wanted.map((r) => fullName(r, index.resolve(r.objectName)!.name)));
+            enriched = rules.map((r) => {
+              const owner = index.resolve(r.objectName);
+              const d = owner ? (details.get(fullName(r, owner.name)) ?? details.get(`${owner.name}.${r.name}`)) : undefined;
+              return d ? { ...r, ...d } : r;
+            });
+          } catch (error) {
+            note = `validation rule formulas unavailable: ${message(error)}`;
+          }
+        }
+        return { output: scanValidationRules(enriched, index, scope, names), detail: note };
+      },
+    },
+    { category: "workflow_rules", needs: ["workflow_rules"], run: async () => ({ output: scanWorkflowRules(await inputs.workflowRules(), index, scope, names) }) },
+    { category: "email_alerts", needs: [], run: async () => ({ output: scanEmailAlerts(await source.emailAlerts(), index, scope, names) }) },
+    { category: "approval_processes", needs: [], run: async () => ({ output: scanApprovalProcesses(await source.approvalProcesses(), index, scope, names) }) },
+    {
+      category: "sharing_rules",
+      needs: ["sharing_rules", "sharing_model"],
+      // Native reads sharing rules for the in-scope objects only.
+      run: async () => ({ output: scanSharingRules((await inputs.sharingRules()).filter((r) => index.resolve(r.objectName)), index) }),
+    },
   ];
 
   stages.push({
@@ -150,7 +221,7 @@ export async function runGraphStage(deps: GraphStageDeps): Promise<GraphStageRes
       const fieldBySfId = new Map<string, StoredFieldInfo>();
       for (const o of inScope) {
         for (const f of o.fields) {
-          if (f.sfId) fieldBySfId.set(normaliseSfId(f.sfId), { objectName: o.apiName, fieldName: f.apiName, label: f.apiName, type: f.type });
+          if (f.sfId) fieldBySfId.set(normaliseSfId(f.sfId), { objectName: o.apiName, fieldName: f.apiName, label: fieldLabels.get(`${o.apiName}.${f.apiName}`) || f.apiName, type: f.type });
         }
       }
       const output = scanDependencies(await inputs.dependencies(), { idToKey, knownKeys: session.emittedKeys, fieldBySfId, index });

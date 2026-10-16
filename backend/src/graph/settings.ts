@@ -14,6 +14,11 @@ export type GraphSettings = {
   scanManagedPackageObjects: boolean;
   scanCustomizedStandardObjects: boolean;
   scanStandardPermissionSets: boolean;
+  // Scope overrides, the standalone equivalent of the native OI_Scan_Object_Scope__mdt records: object
+  // API names forced into (or out of) the graph regardless of the custom/standard rules. Exclusion wins.
+  // Matched case-insensitively; the 20 built-in standard objects (scope.ts) are always included.
+  alwaysIncludeObjects: readonly string[];
+  alwaysExcludeObjects: readonly string[];
 };
 
 type NumericKey = {
@@ -44,7 +49,18 @@ export const DEFAULT_GRAPH_SETTINGS: GraphSettings = {
   scanManagedPackageObjects: false,
   scanCustomizedStandardObjects: true,
   scanStandardPermissionSets: false,
+  alwaysIncludeObjects: [],
+  alwaysExcludeObjects: [],
 };
+
+// Up to this many names per list; a stored list longer than that is truncated rather than rejected.
+const MAX_SCOPE_OVERRIDES = 500;
+
+function nameList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const names = value.filter((v): v is string => typeof v === "string").map((v) => v.trim()).filter((v) => v.length > 0 && v.length <= 255);
+  return [...new Set(names)].slice(0, MAX_SCOPE_OVERRIDES);
+}
 
 function clampInt(value: unknown, [fallback, min, max]: readonly [number, number, number]): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
@@ -60,6 +76,8 @@ export function resolveGraphSettings(stored: unknown): GraphSettings {
   for (const key of ["scanManagedPackageObjects", "scanCustomizedStandardObjects", "scanStandardPermissionSets"] as const) {
     if (typeof raw[key] === "boolean") out[key] = raw[key] as boolean;
   }
+  out.alwaysIncludeObjects = nameList(raw.alwaysIncludeObjects);
+  out.alwaysExcludeObjects = nameList(raw.alwaysExcludeObjects);
   // A default page larger than the result cap would be unreachable.
   out.defaultSearchPageSize = Math.min(out.defaultSearchPageSize, out.maxSearchResults);
   return out;

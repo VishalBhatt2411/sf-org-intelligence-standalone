@@ -31,6 +31,9 @@ export type IntelligenceItem = {
   direction: "in" | "out";
   edgeTypeKey: string;
   status: IntelligenceStatus | null;
+  // Flows only: Process Builder processes are flows with processType "Workflow", grouped apart from flows.
+  subTypeKey: string | null;
+  subTypeLabel: string | null;
 };
 
 export type IntelligenceCategory = {
@@ -67,6 +70,15 @@ export function statusOf(node: StoredNode): IntelligenceStatus | null {
   return null;
 }
 
+const FLOW_TYPE_KEY = "SalesforceMetadata.Flow";
+const PROCESS_BUILDER_PROCESS_TYPE = "Workflow";
+
+// Native's Flow-vs-Process-Builder split, read from the flow's scanned processType.
+export function subTypeOf(node: StoredNode): { subTypeKey: string | null; subTypeLabel: string | null } {
+  if (node.typeKey !== FLOW_TYPE_KEY) return { subTypeKey: null, subTypeLabel: null };
+  return node.attributes.processType === PROCESS_BUILDER_PROCESS_TYPE ? { subTypeKey: "ProcessBuilder", subTypeLabel: "Process Builder" } : { subTypeKey: FLOW_TYPE_KEY, subTypeLabel: "Flow" };
+}
+
 function relevantStages(stages: StageCoverage[], names: readonly string[]): StageCoverage[] {
   const wanted = new Set(names.map((n) => `graph_${n}`));
   return stages.filter((s) => wanted.has(s.category));
@@ -101,7 +113,7 @@ export class IntelligenceService {
         const id = `${category}|${other.nodeKey}|${direction}|${e.typeKey}`;
         if (!bucket || seen.has(id)) continue;
         seen.add(id);
-        bucket.push({ nodeKey: other.nodeKey, label: other.label, typeKey: other.typeKey, kindLabel: nodeKindInfo(other.typeKey)?.label ?? dto.kindLabel, direction, edgeTypeKey: e.typeKey, status: statusOf(other) });
+        bucket.push({ nodeKey: other.nodeKey, label: other.label, typeKey: other.typeKey, kindLabel: nodeKindInfo(other.typeKey)?.label ?? dto.kindLabel, direction, edgeTypeKey: e.typeKey, status: statusOf(other), ...subTypeOf(other) });
       }
     }
 

@@ -6,7 +6,8 @@
 export type RecordGlobal = { name: string; keyPrefix: string | null; queryable: boolean };
 export type RecordDescribeField = { name: string; type: string; nameField: boolean; referenceTo: string[] };
 export type RecordChildRelationship = { childSObject: string; field: string; relationshipName: string | null };
-export type RecordDescribe = { name: string; queryable: boolean; fields: RecordDescribeField[]; childRelationships: RecordChildRelationship[] };
+// `custom` is optional so a describe that does not say falls back to the "__c" naming convention.
+export type RecordDescribe = { name: string; queryable: boolean; custom?: boolean; fields: RecordDescribeField[]; childRelationships: RecordChildRelationship[] };
 
 export interface RecordApi {
   describeGlobal(): Promise<RecordGlobal[]>;
@@ -70,16 +71,31 @@ async function mapPool<T, R>(items: T[], limit: number, fn: (item: T) => Promise
   return out;
 }
 
+// Validates the name against the org's own global describe before it ever reaches SOQL (port of
+// OI_RecordSchemaUtil.describeAccessibleObject).
+export async function describeAccessibleObject(api: RecordApi, objectApiName: string): Promise<RecordDescribe> {
+  if (!API_NAME.test(objectApiName)) throw new RecordInputError("An object API name is required.");
+  const global = (await api.describeGlobal()).find((o) => o.name.toLowerCase() === objectApiName.toLowerCase());
+  if (!global) throw new RecordNotFoundError(`Unknown object: ${objectApiName}`);
+  if (!global.queryable) throw new RecordInputError(`${global.name} cannot be queried.`);
+  return api.describe(global.name);
+}
+
+// The Id must be well formed and its key prefix must belong to the object (port of
+// OI_RecordSchemaUtil.validateRecordIdForObject), so a record Id never reaches SOQL unchecked.
+export async function validateRecordIdForObject(api: RecordApi, describe: RecordDescribe, recordId: string): Promise<RecordGlobal[]> {
+  if (!RECORD_ID.test(recordId)) throw new RecordInputError("The record Id is not valid.");
+  const global = await api.describeGlobal();
+  const owner = global.find((o) => o.keyPrefix === recordId.slice(0, 3));
+  if (owner?.name !== describe.name) throw new RecordInputError(`The record Id does not belong to ${describe.name}.`);
+  return global;
+}
+
 export class RecordService {
   constructor(private readonly api: RecordApi) {}
 
-  // Validates the name against the org's own global describe before it ever reaches SOQL.
-  private async accessibleObject(objectApiName: string): Promise<RecordDescribe> {
-    if (!API_NAME.test(objectApiName)) throw new RecordInputError("An object API name is required.");
-    const global = (await this.api.describeGlobal()).find((o) => o.name.toLowerCase() === objectApiName.toLowerCase());
-    if (!global) throw new RecordNotFoundError(`Unknown object: ${objectApiName}`);
-    if (!global.queryable) throw new RecordInputError(`${global.name} cannot be queried.`);
-    return this.api.describe(global.name);
+  private accessibleObject(objectApiName: string): Promise<RecordDescribe> {
+    return describeAccessibleObject(this.api, objectApiName);
   }
 
   async search(objectApiName: string, term: string): Promise<RecordSummary[]> {
@@ -104,10 +120,8 @@ export class RecordService {
 
   async fragment(objectApiName: string, recordId: string): Promise<RecordFragment> {
     const describe = await this.accessibleObject(objectApiName);
-    if (!RECORD_ID.test(recordId)) throw new RecordInputError("The record Id is not valid.");
-    const global = await this.api.describeGlobal();
+    const global = await validateRecordIdForObject(this.api, describe, recordId);
     const prefixes = new Map(global.filter((o) => o.keyPrefix).map((o) => [o.keyPrefix as string, o]));
-    if (prefixes.get(recordId.slice(0, 3))?.name !== describe.name) throw new RecordInputError(`The record Id does not belong to ${describe.name}.`);
 
     const nameField = nameFieldOf(describe);
     const referenceFields = describe.fields.filter((f) => f.type === "reference");

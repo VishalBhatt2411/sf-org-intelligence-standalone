@@ -1,7 +1,9 @@
-import { Box, Dialog, DialogContent, IconButton, Link, Typography } from "@mui/material";
+import { useState } from "react";
+import { Alert, Box, Dialog, DialogContent, IconButton, Link, Typography } from "@mui/material";
 import Close from "@mui/icons-material/Close";
 import type { ConnectorField, ObjectConnector, ObjectRef } from "./objectRelationshipView";
 import { relationshipTypeLabel } from "./relationshipLayout";
+import type { OpenResult } from "./openInSalesforce";
 
 // One aggregated relationship's own detail (port of native oiRelationshipConnectorDetail): source, type,
 // target, direction and the individual fields. Renders the connector the canvas already holds, so there is
@@ -13,8 +15,9 @@ type Props = {
   connector: ObjectConnector;
   root: ObjectRef;
   onClose: () => void;
-  onOpenObject?: (object: ObjectRef) => void;
-  onOpenField?: (field: ConnectorField) => void;
+  // May resolve to a failure, which is shown inline instead of a link that silently does nothing.
+  onOpenObject?: (object: ObjectRef) => void | Promise<OpenResult | void>;
+  onOpenField?: (field: ConnectorField) => void | Promise<OpenResult | void>;
 };
 
 export function ConnectorDetailDialog({ connector, root, onClose, onOpenObject, onOpenField }: Props) {
@@ -22,11 +25,16 @@ export function ConnectorDetailDialog({ connector, root, onClose, onOpenObject, 
   const target = connector.direction === "incoming" ? root : connector.counterpartObject;
   const type = relationshipTypeLabel(connector);
   const direction = `${source.label} → ${target.label}`;
+  const [openError, setOpenError] = useState<string | null>(null);
+  const run = async (action: () => void | Promise<OpenResult | void>) => {
+    const r = await action();
+    setOpenError(r && !r.ok ? r.error : null);
+  };
   const plural = connector.fields.length === 1 ? "" : "s";
 
   const objectLink = (o: ObjectRef) =>
     onOpenObject ? (
-      <Link component="button" type="button" underline="hover" onClick={() => onOpenObject(o)} sx={{ font: "inherit", fontWeight: 600 }}>
+      <Link component="button" type="button" underline="hover" onClick={() => void run(() => onOpenObject(o))} sx={{ font: "inherit", fontWeight: 600 }}>
         {o.label}
       </Link>
     ) : (
@@ -49,6 +57,11 @@ export function ConnectorDetailDialog({ connector, root, onClose, onOpenObject, 
         </Typography>
       </Box>
       <DialogContent>
+        {openError && (
+          <Alert severity="error" role="alert" onClose={() => setOpenError(null)} sx={{ mb: 2 }}>
+            {openError}
+          </Alert>
+        )}
         <Box component="dl" sx={{ m: 0, display: "grid", gridTemplateColumns: "max-content 1fr", columnGap: 3, rowGap: 1.25, "& dt": { color: "text.secondary", fontSize: 13 }, "& dd": { m: 0, fontSize: 14 } }}>
           <dt>Source Object</dt>
           <dd>{objectLink(source)}</dd>
@@ -68,7 +81,7 @@ export function ConnectorDetailDialog({ connector, root, onClose, onOpenObject, 
               {connector.fields.map((f) => (
                 <Box component="li" key={f.fieldNodeKey} sx={{ display: "flex", alignItems: "baseline", gap: 1 }}>
                   {onOpenField ? (
-                    <Link component="button" type="button" underline="hover" onClick={() => onOpenField(f)} sx={{ font: "inherit" }}>
+                    <Link component="button" type="button" underline="hover" onClick={() => void run(() => onOpenField(f))} sx={{ font: "inherit" }}>
                       {f.fieldApiName ?? f.fieldFqn}
                     </Link>
                   ) : (

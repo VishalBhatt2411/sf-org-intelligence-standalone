@@ -1,16 +1,27 @@
 import { describe, expect, it } from "vitest";
-import type { GraphEdge, GraphNode, IntelligenceItem, ObjectField } from "./graphApi";
+import type { EdgeSummaryRow, GraphEdge, GraphNode, IntelligenceItem, ObjectField, RelationshipField } from "./graphApi";
 import {
   buildEmptyStateMessage,
+  cascadeDeleteLabel,
+  directConnectionNote,
   distinctTargets,
   fieldMetrics,
+  fieldRelationshipRows,
+  fieldRowTitle,
+  fieldTotals,
   filterFields,
   formatTargets,
   groupIntelligenceItems,
-  incomingDrillEntries,
+  hasFields,
+  impactColumnHeader,
+  impactTypeBreakdown,
+  incomingEdgeCounts,
+  outgoingFieldRows,
   overviewRows,
   pluralizeTypeLabel,
   relationshipCounts,
+  relationshipRows,
+  sortFieldsByLabel,
   targetWithCount,
   technicalAttributes,
   yesNoUnknown,
@@ -79,19 +90,58 @@ describe("fields", () => {
   });
 });
 
+describe("field totals and rows", () => {
+  const summary = (typeKey: string, direction: "in" | "out", count: number): EdgeSummaryRow => ({ typeKey, kind: "", direction, role: "", count, confidence: {} as EdgeSummaryRow["confidence"] });
+
+  it("uses stored counts before the list loads and the list afterwards", () => {
+    const withCounts = { attributes: { fieldCount: 10, customFieldCount: 3 } };
+    expect(fieldTotals(withCounts, [])).toEqual({ total: 10, standard: 7, custom: 3, relationship: null });
+    expect(fieldTotals({ attributes: { fieldCount: 2, customFieldCount: 5 } }, []).standard).toBe(0);
+    expect(fieldTotals({ attributes: {} }, [summary("SalesforceMetadata.HAS_FIELD", "out", 8)])).toEqual({ total: 8, standard: null, custom: null, relationship: null });
+    expect(fieldTotals(withCounts, [], [field("A__c"), field("B", { referenceTo: ["X"] })])).toEqual({ total: 2, standard: 1, custom: 1, relationship: 1 });
+    expect(hasFields(fieldTotals({ attributes: {} }, []))).toBe(false);
+    expect(hasFields(fieldTotals(withCounts, []))).toBe(true);
+  });
+
+  it("sorts by label and titles rows by whether they are graph nodes", () => {
+    expect(sortFieldsByLabel([{ label: "b" }, { label: "A" }, { label: "c" }]).map((f) => f.label)).toEqual(["A", "b", "c"]);
+    expect(fieldRowTitle("k")).toBe("Open this field in the graph");
+    expect(fieldRowTitle(null)).toBe("Listed from live schema. Only relationship fields are graph nodes.");
+  });
+
+  const rel = (apiName: string, over: Partial<RelationshipField> = {}): RelationshipField => ({ nodeKey: apiName, apiName, label: apiName, type: "reference", referenceTo: ["Account"], masterDetail: false, required: null, relationshipName: null, custom: false, ...over });
+
+  it("builds outgoing relationship rows and applies the visibility filter to system lookups", () => {
+    const fields = [rel("AccountId", { masterDetail: true, required: false }), rel("OwnerId", { referenceTo: ["User"] })];
+    expect(outgoingFieldRows(fields, "all")).toHaveLength(2);
+    expect(outgoingFieldRows(fields, "business").map((r) => r.apiName)).toEqual(["AccountId"]);
+    expect(outgoingFieldRows(fields, "system").map((r) => r.apiName)).toEqual(["OwnerId"]);
+    const [row] = outgoingFieldRows(fields, "business");
+    expect(row).toMatchObject({ type: "Master-Detail", required: "No", cascadeDelete: "Cascade" });
+    expect(outgoingFieldRows([rel("X")], "all")[0]).toMatchObject({ type: "Lookup", required: "Unknown", cascadeDelete: "Not available" });
+    expect(cascadeDeleteLabel({ masterDetail: false })).toBe("Not available");
+    expect(distinctTargets(fields)).toEqual(["Account", "User"]);
+  });
+});
+
 describe("groupIntelligenceItems", () => {
-  const item = (label: string, typeKey: string, direction: "in" | "out", edgeTypeKey: string): IntelligenceItem => ({ nodeKey: label, label, typeKey, kindLabel: typeKey, direction, edgeTypeKey, status: null });
+  const item = (label: string, typeKey: string, direction: "in" | "out", edgeTypeKey: string, extra: Partial<IntelligenceItem> = {}): IntelligenceItem => ({ nodeKey: label, label, typeKey, kindLabel: typeKey, direction, edgeTypeKey, status: null, ...extra });
 
   it("groups by type and allows drill-down only when direction and edge type are uniform", () => {
     const groups = groupIntelligenceItems([item("a", "Flow", "in", "E1"), item("b", "Flow", "in", "E1"), item("c", "Apex", "in", "E1"), item("d", "Apex", "out", "E1")]);
     expect(groups.map((g) => [g.label, g.items.length, g.drillDown])).toEqual([["Apex", 2, false], ["Flow", 2, true]]);
+  });
+
+  it("splits a type by sub-type and labels the group with the sub-type", () => {
+    const groups = groupIntelligenceItems([item("a", "Flow", "in", "E1"), item("b", "Flow", "in", "E1", { subTypeKey: "ProcessBuilder", subTypeLabel: "Process Builder" })]);
+    expect(groups.map((g) => [g.groupKey, g.label])).toEqual([["Flow", "Flow"], ["ProcessBuilder", "Process Builder"]]);
   });
 });
 
 describe("relationship counts and overview", () => {
   const acc = node("acc", OBJECT_TYPE_KEY, "CustomObject", "Account", { custom: false });
   const inv = node("inv", OBJECT_TYPE_KEY, "CustomObject", "Invoice__c", { custom: true });
-  const fAcc = node("f1", FIELD_TYPE_KEY, "CustomField", "Invoice__c.Account__c");
+  const fAcc = node("f1", FIELD_TYPE_KEY, "CustomField", "Invoice__c.Account__c", { custom: true, type: "reference" });
   const fMd = node("f2", FIELD_TYPE_KEY, "CustomField", "Invoice__c.Parent__c");
   const fSelf = node("f3", FIELD_TYPE_KEY, "CustomField", "Account.ParentId");
   const view = buildObjectRelationshipView(
@@ -99,25 +149,54 @@ describe("relationship counts and overview", () => {
     [edge(HAS_FIELD_EDGE, "inv", "f1"), edge(HAS_FIELD_EDGE, "inv", "f2"), edge(HAS_FIELD_EDGE, "acc", "f3"), edge(LOOKUP_TO_EDGE, "f1", "acc"), edge(MASTER_DETAIL_TO_EDGE, "f2", "acc"), edge(LOOKUP_TO_EDGE, "f3", "acc")],
     "acc",
   );
+  const summaryRow = (typeKey: string, direction: "in" | "out", count: number, role = ""): EdgeSummaryRow => ({ typeKey, kind: typeKey.split(".").pop()!, direction, role, count, confidence: {} as EdgeSummaryRow["confidence"] });
 
-  it("counts incoming lookups, incoming master-detail, self fields and distinct objects", () => {
-    expect(relationshipCounts(view)).toEqual({ incomingLookups: 1, incomingMasterDetail: 1, selfRelationships: 1, referencedObjects: 0, referencingObjects: 1 });
+  it("counts connectors for the centre object", () => {
+    expect(relationshipCounts(view)).toEqual({ selfRelationships: 1, referencedObjects: 0, referencingObjects: 1 });
     expect(relationshipCounts(null)).toBeNull();
   });
 
-  it("lists the counterpart behind each incoming count", () => {
-    expect(incomingDrillEntries(view, "MasterDetail")).toEqual([{ nodeKey: "inv", label: "Invoice__c", detail: "Invoice__c.Parent__c" }]);
-    expect(incomingDrillEntries(null, "Lookup")).toEqual([]);
+  it("reads incoming lookups and master-detail from the edge summary, defaulting to zero", () => {
+    expect(incomingEdgeCounts([summaryRow(LOOKUP_TO_EDGE, "in", 12), summaryRow(MASTER_DETAIL_TO_EDGE, "in", 3), summaryRow(LOOKUP_TO_EDGE, "out", 99)])).toEqual({ incomingLookups: 12, incomingMasterDetail: 3 });
+    expect(incomingEdgeCounts([])).toEqual({ incomingLookups: 0, incomingMasterDetail: 0 });
+  });
+
+  it("words generic relationship rows and the direct-connection note", () => {
+    const rows = relationshipRows([summaryRow("SalesforceMetadata.USES_APEX", "out", 2, "Apex"), summaryRow("SalesforceMetadata.USES_APEX", "in", 1)]);
+    expect(rows.map((r) => [r.label, r.direction, r.edgeTypeKey])).toEqual([["Outgoing — Apex", "outgoing", "SalesforceMetadata.USES_APEX"], ["Incoming — Uses Apex", "incoming", "SalesforceMetadata.USES_APEX"]]);
+    expect(directConnectionNote(1)).toContain("1 directly connected metadata component —");
+    expect(directConnectionNote(4)).toContain("4 directly connected metadata components —");
   });
 
   it("builds overview rows for objects and fields", () => {
     expect(overviewRows(inv, null)).toEqual([["API Name", "Invoice__c"], ["Type", "Custom Object"], ["Namespace", "—"], ["Custom / Standard", "Custom"]]);
     expect(overviewRows({ ...acc, label: "Account Label" }, null)[0]).toEqual(["Name", "Account Label"]);
     const rows = Object.fromEntries(overviewRows(fAcc, null));
-    expect(rows).toMatchObject({ "API Name": "Account__c", "Parent Object": "Invoice__c", "Custom / Standard": "Custom" });
+    expect(rows).toMatchObject({ "API Name": "Account__c", "Data Type": "reference", "Parent Object": "Invoice__c", "Custom / Standard": "Custom" });
+    expect(overviewRows(fMd, null).some(([k]) => k === "Custom / Standard")).toBe(false);
+    expect(overviewRows(node("x", "SalesforceMetadata.Flow", "Flow", "My_Flow", { custom: false }, "My Flow"), null)).toEqual([["Name", "My Flow"], ["API Name", "My_Flow"], ["Type", "Flow"], ["Custom / Standard", "Standard"]]);
+  });
+
+  it("shows field relationship rows only when present", () => {
+    expect(fieldRelationshipRows({ attributes: {} })).toEqual([]);
+    expect(fieldRelationshipRows({ attributes: { relationship: "MasterDetail", referenceTo: ["A", "B"], relationshipName: "Parent__r" } })).toEqual([["Relationship Type", "Master-Detail"], ["Target Object", "A, B"], ["Relationship Name", "Parent__r"]]);
+    expect(fieldRelationshipRows({ attributes: { referenceTo: ["A"] } })).toEqual([["Target Object", "A"]]);
   });
 
   it("keeps curated attributes out of the technical details", () => {
-    expect(technicalAttributes({ attributes: { label: "x", custom: true, status: "Active", referenceTo: ["A"] } })).toEqual([["status", "Active"]]);
+    expect(technicalAttributes({ attributes: { label: "x", custom: true, status: "Active", referenceTo: ["A"], fieldCount: 3 } })).toEqual([["status", "Active"]]);
   });
 });
+
+describe("impact", () => {
+  const n = (typeKey: string, kindLabel: string) => ({ typeKey, kindLabel });
+  it("orders the type breakdown by first appearance and hides a single type", () => {
+    expect(impactTypeBreakdown([n("F", "Flow"), n("A", "Apex Class"), n("F", "Flow")])).toEqual([{ typeKey: "F", label: "Flows", count: 2 }, { typeKey: "A", label: "Apex Class", count: 1 }]);
+    expect(impactTypeBreakdown([n("F", "Flow"), n("F", "Flow")])).toEqual([]);
+  });
+  it("names the first column by direction", () => {
+    expect(impactColumnHeader("downstream")).toBe("What depends on this");
+    expect(impactColumnHeader("upstream")).toBe("What does this depend on");
+  });
+});
+

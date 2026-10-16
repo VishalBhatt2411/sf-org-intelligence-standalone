@@ -22,7 +22,7 @@ describe("scanObjects", () => {
       { apiName: "Invoice__c", label: "Invoice", sfId: "01I000000000001AAA" },
     ]);
     expect(out.nodes.map((n) => n.fqn)).toEqual(["Account", "Invoice__c"]);
-    expect(out.nodes[1].attributes).toEqual({ label: "Invoice", custom: true });
+    expect(out.nodes[1].attributes).toMatchObject({ label: "Invoice", custom: true, namespace: null, durableId: "01I000000000001AAA" });
     expect(out.nodes[0].attributes).toMatchObject({ custom: false });
     expect(out.ids).toEqual([["01I000000000001AAA", keyOf("CustomObject", "Invoice__c")]]);
     expect(out.edges).toEqual([]);
@@ -61,11 +61,11 @@ describe("scanRelationshipFields", () => {
     expect(out.nodes[0].attributes).toMatchObject({ relationship: "MasterDetail" });
   });
 
-  it("emits one edge per in-scope target of a polymorphic field and drops out-of-scope targets", () => {
+  it("emits one edge per in-scope target of a polymorphic field but still lists every target", () => {
     const out = scanRelationshipFields([{ name: "Invoice__c", fields: [field({ name: "Who__c", referenceTo: ["Account", "Group", "User"] })] }], index);
     const lookups = out.edges.filter((e) => e.typeKey.endsWith("LOOKUP_TO"));
     expect(lookups).toHaveLength(2);
-    expect(out.nodes[0].attributes.referenceTo).toEqual(["Account", "User"]);
+    expect(out.nodes[0].attributes.referenceTo).toEqual(["Account", "Group", "User"]);
   });
 
   it("skips a field whose targets are all out of scope", () => {
@@ -73,7 +73,7 @@ describe("scanRelationshipFields", () => {
     expect(out).toEqual({ nodes: [], edges: [], ids: [] });
   });
 
-  it("skips system and non-reference fields", () => {
+  it("keeps system lookups and skips non-reference fields", () => {
     const out = scanRelationshipFields(
       [
         {
@@ -87,7 +87,15 @@ describe("scanRelationshipFields", () => {
       ],
       index
     );
-    expect(out.nodes).toEqual([]);
+    expect(out.nodes.map((n) => n.fqn).sort()).toEqual(["Invoice__c.CreatedById", "Invoice__c.OwnerId"]);
+    expect(out.edges.filter((e) => e.targetNodeKey === keyOf("CustomObject", "User"))).toHaveLength(2);
+  });
+
+  it("stores every target and the describe details, but edges only to in-scope targets", () => {
+    const details = { length: 18, precision: 0, scale: 0, nillable: true, unique: false, externalId: false, calculated: false, createable: true, updateable: true };
+    const out = scanRelationshipFields([{ name: "Account", fields: [field({ name: "Who__c", referenceTo: ["User", "Group"], details })] }], index);
+    expect(out.nodes[0].attributes).toMatchObject({ referenceTo: ["Group", "User"], custom: true, masterDetail: false, ...details });
+    expect(out.edges.filter((e) => e.typeKey !== "SalesforceMetadata.HAS_FIELD").map((e) => e.targetNodeKey)).toEqual([keyOf("CustomObject", "User")]);
   });
 
   it("skips a described object that is not in scope", () => {

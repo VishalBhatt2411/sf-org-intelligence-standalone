@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { GraphNotFoundError } from "./errors";
 import { keyOfRef, seed, type EdgeSpec, type Ref } from "./graphTestKit";
 import { InMemoryGraphRepository } from "./inMemoryGraphRepository";
-import { INTELLIGENCE_ITEM_CAP, IntelligenceService, STALE_AFTER_MS, statusOf } from "./intelligenceService";
+import { INTELLIGENCE_ITEM_CAP, IntelligenceService, STALE_AFTER_MS, statusOf, subTypeOf } from "./intelligenceService";
 
 const C = "c1";
 const obj: Ref = ["CustomObject", "Invoice__c"];
@@ -110,5 +110,16 @@ describe("statusOf", () => {
     expect(statusOf(node({ state: "Inactive" }))).toBe("inactive");
     expect(statusOf(node({ status: "Weird" }))).toBeNull();
     expect(statusOf(node({}))).toBeNull();
+  });
+});
+
+describe("subTypeOf", () => {
+  const node = (typeKey: string, attributes: Record<string, unknown>) => ({ typeKey, attributes }) as Parameters<typeof subTypeOf>[0];
+
+  it("splits Process Builder from Flow and leaves other types without a subtype", () => {
+    expect(subTypeOf(node("SalesforceMetadata.Flow", { processType: "Workflow" }))).toEqual({ subTypeKey: "ProcessBuilder", subTypeLabel: "Process Builder" });
+    expect(subTypeOf(node("SalesforceMetadata.Flow", { processType: "AutoLaunchedFlow" }))).toEqual({ subTypeKey: "SalesforceMetadata.Flow", subTypeLabel: "Flow" });
+    expect(subTypeOf(node("SalesforceMetadata.Flow", {}))).toEqual({ subTypeKey: "SalesforceMetadata.Flow", subTypeLabel: "Flow" });
+    expect(subTypeOf(node("SalesforceMetadata.ApexClass", {}))).toEqual({ subTypeKey: null, subTypeLabel: null });
   });
 });

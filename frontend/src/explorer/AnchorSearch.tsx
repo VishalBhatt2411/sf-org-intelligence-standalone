@@ -19,16 +19,22 @@ type Props = {
   typeLabel: string;
   disabled?: boolean;
   onPick: (node: GraphNode) => void;
+  // Once something is anchored the box collapses into a ribbon with this label and a change button.
+  anchoredLabel?: string | null;
 };
 
 // Anchor picker (port of native oiSearchBar): focusing the box lists what is available, typing filters that
 // list instantly, Enter takes the top suggestion, and the Search button does the same for mouse users. The
 // browse list is capped by the server, so for larger orgs a debounced prefix search fills in what the cap hid.
-export function AnchorSearch({ api, connectionId, typeKey, label, placeholder, typeLabel, disabled, onPick }: Props) {
+export function AnchorSearch({ api, connectionId, typeKey, label, placeholder, typeLabel, disabled, onPick, anchoredLabel }: Props) {
   const [text, setText] = useState("");
   const [debounced, setDebounced] = useState("");
   const [nav, setNav] = useState<SearchNavState>({ open: false, active: -1 });
   const inputRef = useRef<HTMLInputElement>(null);
+  const [changing, setChanging] = useState(false);
+  useEffect(() => {
+    if (changing) inputRef.current?.focus();
+  }, [changing]);
 
   useEffect(() => {
     const id = setTimeout(() => setDebounced(text.trim()), DEBOUNCE_MS);
@@ -58,6 +64,7 @@ export function AnchorSearch({ api, connectionId, typeKey, label, placeholder, t
     setText("");
     setDebounced("");
     inputRef.current?.blur();
+    setChanging(false);
     onPick(node);
   };
 
@@ -79,6 +86,18 @@ export function AnchorSearch({ api, connectionId, typeKey, label, placeholder, t
   };
 
   const loading = browse.isFetching || serverSearch.isFetching;
+  if (anchoredLabel && !changing) {
+    return (
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1, pl: 1.5, pr: 0.5, py: 0.25, borderRadius: 2, bgcolor: "background.paper", border: "1px solid", borderColor: "divider", minWidth: 220, maxWidth: 520 }}>
+        <Typography noWrap variant="body2" fontWeight={600} sx={{ flex: 1 }}>
+          {anchoredLabel}
+        </Typography>
+        <Button size="small" disabled={disabled} onClick={() => setChanging(true)} sx={{ textTransform: "none", minWidth: 0, px: 1.5 }}>
+          Change {typeLabel.toLowerCase()}
+        </Button>
+      </Box>
+    );
+  }
   return (
     <Box sx={{ position: "relative", flex: 1, minWidth: 220, maxWidth: 520 }}>
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, pl: 1.5, pr: 0.5, py: 0.5, borderRadius: 2, bgcolor: "background.paper", border: "1px solid", borderColor: nav.open ? "primary.main" : "divider", opacity: disabled ? 0.6 : 1 }}>
@@ -93,7 +112,12 @@ export function AnchorSearch({ api, connectionId, typeKey, label, placeholder, t
             setNav({ open: true, active: -1 });
           }}
           onFocus={() => setNav((s) => ({ ...s, open: true }))}
-          onBlur={() => setTimeout(() => setNav({ open: false, active: -1 }), 150)}
+          onBlur={() =>
+            setTimeout(() => {
+              setNav({ open: false, active: -1 });
+              setChanging(false);
+            }, 150)
+          }
           onKeyDown={onKeyDown}
           inputProps={{ "aria-label": label, role: "combobox", "aria-expanded": nav.open, "aria-controls": "oi-anchor-list", "aria-autocomplete": "list" }}
           sx={{ flexGrow: 1, fontSize: 13 }}

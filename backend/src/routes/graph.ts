@@ -1,11 +1,13 @@
 import { Router, type ErrorRequestHandler, type Request } from "express";
+import { ConnectionsService } from "../graph/connectionsService";
 import { DetailService } from "../graph/detailService";
-import { GraphInputError, GraphNotFoundError, NODE_KEY_PATTERN } from "../graph/errors";
+import { GraphInputError, GraphNotFoundError, NODE_KEY_PATTERN, SALESFORCE_SESSION_MESSAGE, isSalesforceSessionError } from "../graph/errors";
 import type { GraphReadRepository } from "../graph/graphReadRepository";
 import type { GraphSource } from "../graph/graphSource";
 import { ImpactService, type ImpactDirection } from "../graph/impactService";
 import { IntelligenceService } from "../graph/intelligenceService";
 import { RecordInputError, RecordNotFoundError, RecordService } from "../graph/recordHierarchy";
+import { RecordSharingService } from "../graph/recordSharing";
 import { SearchService } from "../graph/searchService";
 import { TraversalService } from "../graph/traversalService";
 
@@ -50,6 +52,7 @@ export function createGraphRouter({ reader, sourceFor }: GraphRouteDeps): Router
   const impact = new ImpactService(reader);
   const detail = new DetailService(reader);
   const intelligence = new IntelligenceService(reader);
+  const connections = new ConnectionsService(reader);
 
   router.use((req, res, next) => {
     if (!req.auth || req.auth.connectionId !== cid(req)) return res.status(404).json({ error: "Not found" });
@@ -74,13 +77,18 @@ export function createGraphRouter({ reader, sourceFor }: GraphRouteDeps): Router
     const { described } = await (await sourceFor(cid(req))).describe([apiName]);
     const object = described[0];
     if (!object) throw new GraphNotFoundError("Object not found or not accessible");
+    // Each field also carries the scanned graph node key when it has one, so a row opens the field on the
+    // server key even when it is off the canvas.
+    const keys = await connections.fieldNodeKeys(cid(req), object.name);
     res.json({
       apiName: object.name,
       fields: object.fields.map((f) => ({
+        nodeKey: keys.get(f.name) ?? null,
         name: f.name,
         label: f.label,
         type: f.type,
-        referenceTo: f.referenceTo,
+        // describe() stores null for non-reference fields; the API contract is always an array.
+        referenceTo: f.referenceTo ?? [],
         masterDetail: f.masterDetail,
         custom: f.custom ?? f.name.endsWith("__c"),
         required: f.required ?? null,
@@ -114,8 +122,30 @@ export function createGraphRouter({ reader, sourceFor }: GraphRouteDeps): Router
     res.json(await new RecordService((await sourceFor(cid(req))).records()).fragment(req.params.apiName, req.params.recordId));
   });
 
+  // Record mode's Sharing section: live share rows, approval lock and org-wide default of one record.
+  router.get("/objects/:apiName/records/:recordId/sharing", async (req, res) => {
+    const source = await sourceFor(cid(req));
+    res.json(await new RecordSharingService(source.records(), (name) => source.objectSharing(name)).sharing(req.params.apiName, req.params.recordId));
+  });
+
   router.get("/nodes/:nodeKey/intelligence", async (req, res) => {
     res.json(await intelligence.forNode(cid(req), nodeKey(req)));
+  });
+
+  // The Intelligence panel's drill-down: one page of a node's connections of one edge type in one direction.
+  router.get("/nodes/:nodeKey/connections", async (req, res) => {
+    const edgeTypeKey = text(req, "edgeTypeKey") ?? "";
+    if (!EDGE_TYPE_KEY.test(edgeTypeKey)) throw new GraphInputError("edgeTypeKey must be an edge type key");
+    const cursor = text(req, "cursor") || undefined;
+    if (cursor !== undefined && !/^[0-9a-f]{64}$/.test(cursor)) throw new GraphInputError("cursor is not valid");
+    const search = text(req, "q");
+    if (search !== undefined && search.length > 200) throw new GraphInputError("q is too long");
+    res.json(await connections.connections(cid(req), nodeKey(req), { direction: text(req, "direction") ?? "", edgeTypeKey, pageSize: integer(req, "pageSize"), cursor, search }));
+  });
+
+  // The outgoing relationship table: the object own Lookup / Master-Detail fields from the scanned graph.
+  router.get("/nodes/:nodeKey/relationship-fields", async (req, res) => {
+    res.json({ fields: await connections.relationshipFields(cid(req), nodeKey(req)) });
   });
 
   router.get("/nodes/:nodeKey/expand", async (req, res) => {
@@ -144,6 +174,8 @@ export function createGraphRouter({ reader, sourceFor }: GraphRouteDeps): Router
     if (err instanceof GraphInputError) return res.status(400).json({ error: err.message });
     if (err instanceof GraphNotFoundError || err instanceof RecordNotFoundError) return res.status(404).json({ error: err.message });
     if (err instanceof RecordInputError) return res.status(400).json({ error: err.message });
+    // 424: the request was fine, the Salesforce session it depends on is not.
+    if (isSalesforceSessionError(err)) return res.status(424).json({ error: SALESFORCE_SESSION_MESSAGE });
     next(err);
   };
   router.use(errors);

@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Box, InputBase, Paper, Typography } from "@mui/material";
 import ArrowForwardRoundedIcon from "@mui/icons-material/ArrowForwardRounded";
 import { countLabel, matchFields, type FieldOption } from "./fieldOptions";
@@ -7,15 +7,21 @@ import { searchKeyDown, type SearchNavState } from "./searchNav";
 type Props = {
   options: readonly FieldOption[];
   onPick: (option: FieldOption) => void;
+  // Native opens the field list as soon as the object is chosen; this focuses the box and shows the list on mount.
+  autoOpen?: boolean;
 };
 
 // Field picker for Field mode (port of native oiFieldPicker): the object's own fields are already loaded, so
 // the search box filters them locally by label or API name. The list opens on focus, shows at most a dozen
 // rows with the full count above, and closes on select, Escape or blur.
-export function FieldPicker({ options, onPick }: Props) {
+export function FieldPicker({ options, onPick, autoOpen = false }: Props) {
   const [text, setText] = useState("");
-  const [nav, setNav] = useState<SearchNavState>({ open: false, active: -1 });
+  const [nav, setNav] = useState<SearchNavState>({ open: autoOpen, active: -1 });
   const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (autoOpen) inputRef.current?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const matches = useMemo(() => matchFields(options, text), [options, text]);
 
   const pick = (option: FieldOption) => {
